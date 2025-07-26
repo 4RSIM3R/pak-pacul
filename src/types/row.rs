@@ -38,12 +38,6 @@ impl Row {
         Ok(())
     }
 
-    // pub fn size(&self) -> usize {
-    //     let row_id_size = if self.row_id.is_some() { 8 } else { 0 };
-    //     let values_size: usize = self.values.iter().map(|v| v.size()).sum();
-    //     row_id_size + values_size + (self.values.len() * 4) // 4 bytes per value header
-    // }
-
     pub fn size(&self) -> usize {
         let mut size = 1; // has_row_id flag
 
@@ -319,5 +313,4 @@ impl Row {
             }),
         }
     }
-
 }

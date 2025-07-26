@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bincode = "2.0.1"
 chrono = "0.4.41"
+crc32fast = "1.5.0"
 rustyline = { version = "16.0.0", features = ["with-file-history"] }
 serde = { version = "1.0.219", features = ["derive"] }
 sqlparser = "0.58.0"
