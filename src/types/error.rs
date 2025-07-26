@@ -42,6 +42,12 @@ pub enum DatabaseError {
     OverflowDataNotImplemented { page_id: PageId },
     #[error("Checksum verification failed: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: u32, actual: u32 },
+    #[error("Invalid header: {reason}")]
+    InvalidHeader { reason: String },
+    #[error("Unsupported file format version: {version}")]
+    UnsupportedFileFormat { version: u8 },
+    #[error("Corrupted database: {reason}")]
+    CorruptedDatabase { reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;

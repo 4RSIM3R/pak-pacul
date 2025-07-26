@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use bambang::art::welcome_message;
+use bambang::{art::welcome_message, storage::storage_manager::StorageManager};
 use rustyline::{DefaultEditor, Result, error::ReadlineError};
 
 fn read_multiline_command(rl: &mut DefaultEditor) -> Result<String> {
@@ -66,7 +66,7 @@ Use Up/Down arrows to navigate command history.
         _ => {
             // Process as database command
             println!("Executing: {}", cmd);
-            // TODO: Implement actual database command processing
+
             println!("Command processed successfully!");
         }
     }
@@ -78,35 +78,37 @@ fn main() -> Result<()> {
     let welcome = welcome_message("BAMBANG DB");
     println!("{}", welcome);
 
-    let mut rl = DefaultEditor::new()?;
-    rl.load_history("history.txt")?;
+    let storage = StorageManager::new("test.db").expect("Failed to open database");
 
-    loop {
-        match read_multiline_command(&mut rl) {
-            Ok(input) => {
-                let command = input.trim().to_string();
+    // let mut rl = DefaultEditor::new()?;
+    // rl.load_history("history.txt")?;
 
-                if !command.is_empty() {
-                    rl.add_history_entry(&command)?;
-                    if !process_command(&command) {
-                        break;
-                    }
-                }
-            }
-            Err(ReadlineError::Interrupted) => {
-                println!("Interrupted");
-                break;
-            }
-            Err(ReadlineError::Eof) => {
-                println!("EOF");
-                break;
-            }
-            Err(err) => {
-                println!("Error: {:?}", err);
-                break;
-            }
-        }
-    }
+    // loop {
+    //     match read_multiline_command(&mut rl) {
+    //         Ok(input) => {
+    //             let command = input.trim().to_string();
+
+    //             if !command.is_empty() {
+    //                 rl.add_history_entry(&command)?;
+    //                 if !process_command(&command) {
+    //                     break;
+    //                 }
+    //             }
+    //         }
+    //         Err(ReadlineError::Interrupted) => {
+    //             println!("Interrupted");
+    //             break;
+    //         }
+    //         Err(ReadlineError::Eof) => {
+    //             println!("EOF");
+    //             break;
+    //         }
+    //         Err(err) => {
+    //             println!("Error: {:?}", err);
+    //             break;
+    //         }
+    //     }
+    // }
 
     Ok(())
 }
