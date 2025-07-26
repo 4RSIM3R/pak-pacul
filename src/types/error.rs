@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::types::PageId;
+
 #[derive(Error, Debug)]
 pub enum DatabaseError {
     #[error("I/O error: {0}")]
@@ -40,6 +42,15 @@ pub enum DatabaseError {
     
     #[error("Transaction aborted: {reason}")]
     TransactionAborted { reason: String },
+
+    #[error("Invalid page size: {expected} bytes, got {actual} bytes")]
+    InvalidPageSize { expected: usize, actual: usize },
+
+    #[error("Corrupted page: page_id={page_id}, reason={reason}")]
+    CorruptedPage { page_id: PageId, reason: String },
+
+    #[error("Invalid page type: {0}")]
+    InvalidPageType(u8),
 }
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;
