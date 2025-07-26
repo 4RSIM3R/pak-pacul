@@ -1,6 +1,6 @@
 ## Project Overview
 
-Bambang DB SQLite-like embedded database in Rust with B+ tree indexing, slotted page storage, and parallel scanning capabilities. The project follows production-grade patterns while maintaining educational clarity.
+Bambang DB SQLite-like embedded database in Rust with B+ tree indexing, slotted page storage, and parallel scanning capabilities. The project follows production-grade and best practices also latest api updates.
 
 ## Project Structure
 

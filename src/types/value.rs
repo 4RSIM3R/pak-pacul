@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use bincode::{Decode, Encode};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::types::error::DatabaseError;
@@ -17,7 +17,7 @@ pub enum DataType {
     Timestamp,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub enum Value {
     Null,
     Integer(i64),
@@ -90,12 +90,16 @@ impl Value {
             return Ok(Value::Timestamp(dt.timestamp()));
         }
 
+        // Try datetime format (e.g., "2022-01-01 12:30:45")
         if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
             let utc_dt = Utc.from_utc_datetime(&dt);
             return Ok(Value::Timestamp(utc_dt.timestamp()));
         }
 
-        if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d") {
+        // Try date-only format (e.g., "2022-01-01") - this was the bug!
+        if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            // Convert date to datetime at midnight UTC
+            let dt = date.and_hms_opt(0, 0, 0).unwrap(); // Safe unwrap for midnight
             let utc_dt = Utc.from_utc_datetime(&dt);
             return Ok(Value::Timestamp(utc_dt.timestamp()));
         }
@@ -147,6 +151,38 @@ impl PartialOrd for Value {
                 match (a.coerce_to_number(), b.coerce_to_number()) {
                     (Some(x), Some(y)) => x.partial_cmp(&y),
                     _ => None, // Incomparable types
+                }
+            }
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Exact type matches
+            (Value::Null, Value::Null) => true,
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Real(a), Value::Real(b)) => a == b,
+            (Value::Text(a), Value::Text(b)) => a == b,
+            (Value::Blob(a), Value::Blob(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
+
+            // Cross-type numeric comparisons
+            (Value::Integer(a), Value::Real(b)) => (*a as f64) == *b,
+            (Value::Real(a), Value::Integer(b)) => *a == (*b as f64),
+
+            // Try coercing to numbers for other cross-type comparisons
+            (a, b) => {
+                // Don't compare null with non-null values
+                if a.is_null() || b.is_null() {
+                    return false;
+                }
+
+                match (a.coerce_to_number(), b.coerce_to_number()) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => false, // Incomparable types are not equal
                 }
             }
         }
