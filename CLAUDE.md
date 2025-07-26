@@ -84,12 +84,17 @@ proptest = "1.4"
 
 ## Types Module
 
-Type will held some type such as, add description that will make LLM agent efficiently understand and extend knowledge
-if needed to folder `types`
+This module is responsible for hold the shared types, such-as `row`, `page`, etc
 
 ## Planner Module
 
+This module will transform sql query to a logical planner
 
+## Optimizer Module
+
+## Executor Module
+
+## Storage Module
 
 ## Best Practices Implementation Notes
 

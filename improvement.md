@@ -1,55 +1,71 @@
-## value.rs
+# SQLite Database Implementation with B+ Tree - Key Improvements
 
-Choose unix-timestamp as base for handling timestamp or date related data types, only introduce very primitive data types
-only support : 
+## Value Types (`value.rs`)
 
-* Null
-* Integer
-* Real (Float)
-* Text 
-* Blob
-* Boolean
-* Timestamp
+The database uses Unix timestamps as the foundation for all date and time operations, keeping the type system minimal and efficient.
 
-## row.rs
+**Supported Data Types:**
+- `Null` - Represents absence of value
+- `Integer` - Signed integers (i64)
+- `Real` - Floating-point numbers (f64)
+- `Text` - UTF-8 encoded strings
+- `Blob` - Binary large objects
+- `Boolean` - True/false values
+- `Timestamp` - Unix timestamp-based datetime
 
-Using custom binary format instead of bincode, preventing wasting ser-de bytes processed, here the comparison result : 
+This minimalist approach reduces complexity while covering all essential use cases for a relational database.
 
-```txt
----- types::row_test::demonstrate_serialization_waste bincode ----
-Calculated size: 21 bytes
-Actual serialized size: 30 bytes
-Waste ratio: 1.43x
+## Row Serialization (`row.rs`)
 
----- types::row_test::demonstrate_serialization_waste custom_binary_format ----
-Calculated size: 17 bytes
-Actual serialized size: 17 bytes
-Waste ratio: 1.00x
-```
+Implemented a custom binary serialization format instead of using `bincode` to eliminate serialization overhead and achieve optimal space efficiency.
 
-bincode config i use : 
+### Performance Comparison
 
+| Format | Calculated Size | Actual Size | Waste Ratio |
+|--------|----------------|-------------|-------------|
+| **Custom Binary** | 17 bytes | 17 bytes | **1.00x** |
+| bincode | 21 bytes | 30 bytes | 1.43x |
+
+### Why bincode was inefficient:
+- **Vec length prefix**: 8 bytes overhead
+- **Option discriminants**: 1 byte per nullable field
+- **Enum discriminants**: Additional bytes for each Value variant
+- **Padding/alignment**: Potential extra bytes for memory alignment
+
+The custom format eliminates these overheads by using a compact, schema-aware encoding that knows exactly what data to expect.
+
+*bincode configuration tested:*
 ```rust
 let config = bincode::config::standard()
-            .with_fixed_int_encoding()
-            .with_little_endian();
+    .with_fixed_int_encoding()
+    .with_little_endian();
 ```
 
-Because bincode add :
-- Vec length prefix (8 bytes)
-- Option discriminant (1 byte)
-- Enum discriminants for each Value
-- Potential padding/alignment
+## Page Management (`page.rs`)
 
-## page.rs
+Introduced a **slot pointer array** architecture for efficient page management and lazy loading capabilities.
 
-Introducing slot pointer array, that will manage the position of row / cell inside page, so with that one, we can
-load only metadata needed such as, page_id, that slot pointer array and next page id, instead of full 4KB page on memory
-then pass-it to global worker queue, and the remain row reading process can be lazily implemented later on the worker side
+### Key Benefits
 
----- types::page_test::test_metadata_only_mode (test_metadata_only_mode) ----
-Metadata size: 44
-Memory footprint: 224
-Page size: 4096
+Instead of loading entire 4KB pages into memory, the system can work with lightweight metadata:
 
-See, instead of load that 4KB, we can only load -+224 bytes to memory
+- **Page ID**: Unique identifier
+- **Slot pointer array**: Maps logical positions to physical row locations
+- **Next page ID**: For linked page traversal
+
+### Memory Efficiency
+
+```
+Full page load:     4,096 bytes
+Metadata-only load:   224 bytes
+Memory savings:     ~94.5%
+```
+
+### Architecture Advantages
+
+1. **Lazy Loading**: Row data is only read when actually needed
+2. **Worker Queue Integration**: Lightweight metadata can be efficiently passed to background workers
+3. **Reduced I/O**: Significant reduction in disk reads for index operations
+4. **Better Caching**: More metadata can fit in memory simultaneously
+
+This approach enables the database to handle much larger datasets efficiently by keeping the working set small and deferring expensive I/O operations until absolutely necessary.
