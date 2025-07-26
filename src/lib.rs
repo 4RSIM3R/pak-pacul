@@ -1,4 +1,5 @@
 pub mod art;
+pub mod executor;
 pub mod optimizer;
 pub mod planner;
 pub mod storage;

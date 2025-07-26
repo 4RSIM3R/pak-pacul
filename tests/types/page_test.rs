@@ -531,7 +531,7 @@ fn test_boundary_conditions() {
 
 #[test]
 fn bench_page_operations() {
-    let iterations = 1000;
+    let iterations = 1_000;
 
     // Benchmark insertion
     let start = Instant::now();
