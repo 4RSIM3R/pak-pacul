@@ -1,5 +1,5 @@
 use crate::{
-    planner::{error::PlannerError, logical_plan::LogicalPlan, operator::query::QueryOperator},
+    planner::{error::PlannerError, logical_plan::LogicalPlan},
     types::value::DataType,
 };
 use sqlparser::{
@@ -30,8 +30,10 @@ impl SqlParser {
 
     fn to_plan(&self, statement: &Statement) -> Result<LogicalPlan, PlannerError> {
         match statement {
-            Statement::Query(query) => QueryOperator::generate(query),
-            _ => Err(PlannerError::UnsupportedStatement(format!("{:?}", statement))),
+            _ => Err(PlannerError::UnsupportedStatement(format!(
+                "{:?}",
+                statement
+            ))),
         }
     }
 
