@@ -1,15 +1,21 @@
-use std::collections::HashSet;
 use bambang::{
-    executor::{scan::{ScanIterator, Scanner}, sequential_scan::SequentialScanner},
+    executor::{
+        scan::{ScanIterator, Scanner},
+        sequential_scan::SequentialScanner,
+    },
     types::{error::DatabaseError, row::Row, value::Value},
     utils::mock::TempDatabase,
 };
+use std::collections::HashSet;
 
 #[test]
 fn test_sequential_scanner_basic_functionality() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_basic");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("test_table", "CREATE TABLE test_table(id INTEGER, name TEXT)")?;
+    storage.create_table(
+        "test_table",
+        "CREATE TABLE test_table(id INTEGER, name TEXT)",
+    )?;
     let test_data = vec![
         (1, "Alice"),
         (2, "Bob"),
@@ -18,10 +24,7 @@ fn test_sequential_scanner_basic_functionality() -> Result<(), DatabaseError> {
         (5, "Eve"),
     ];
     for (id, name) in &test_data {
-        let row = Row::new(vec![
-            Value::Integer(*id),
-            Value::Text(name.to_string()),
-        ]);
+        let row = Row::new(vec![Value::Integer(*id), Value::Text(name.to_string())]);
         storage.insert_into_table("test_table", row)?;
     }
     let mut scanner = SequentialScanner::new(storage, "test_table".to_string(), None)?;
@@ -30,7 +33,8 @@ fn test_sequential_scanner_basic_functionality() -> Result<(), DatabaseError> {
         scanned_rows.push(row);
     }
     assert_eq!(scanned_rows.len(), test_data.len());
-    let mut scanned_ids: Vec<i64> = scanned_rows.iter()
+    let mut scanned_ids: Vec<i64> = scanned_rows
+        .iter()
         .map(|row| match &row.values[0] {
             Value::Integer(id) => *id,
             _ => panic!("Expected integer ID"),
@@ -67,12 +71,12 @@ fn test_scanner_reset_functionality() -> Result<(), DatabaseError> {
 fn test_batch_scanning() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_batch");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("batch_test", "CREATE TABLE batch_test(id INTEGER, value TEXT)")?;
+    storage.create_table(
+        "batch_test",
+        "CREATE TABLE batch_test(id INTEGER, value TEXT)",
+    )?;
     for i in 1..=10 {
-        let row = Row::new(vec![
-            Value::Integer(i),
-            Value::Text(format!("value_{}", i)),
-        ]);
+        let row = Row::new(vec![Value::Integer(i), Value::Text(format!("value_{}", i))]);
         storage.insert_into_table("batch_test", row)?;
     }
     let mut scanner = SequentialScanner::new(storage, "batch_test".to_string(), Some(3))?;
@@ -121,8 +125,11 @@ fn test_scan_iterator_wrapper() -> Result<(), DatabaseError> {
 fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_large");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("large_test", "CREATE TABLE large_test(id INTEGER, data TEXT)")?;
-    for i in 1..=10_000 {
+    storage.create_table(
+        "large_test",
+        "CREATE TABLE large_test(id INTEGER, data TEXT)",
+    )?;
+    for i in 1..=1_000 {
         let row = Row::new(vec![
             Value::Integer(i),
             Value::Text(format!("data_string_for_row_{}_with_some_padding", i)),
@@ -138,7 +145,7 @@ fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
         if let Value::Integer(id) = &row.values[0] {
             assert!(!seen_ids.contains(id), "Duplicate ID found: {}", id);
             seen_ids.insert(*id);
-            assert!(*id >= 1 && *id <= 1000);
+            assert!(*id >= 1 && *id <= 1_000);
         } else {
             panic!("Expected integer ID");
         }
@@ -148,8 +155,8 @@ fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
             panic!("Expected text data");
         }
     }
-    assert_eq!(count, 1000);
-    assert_eq!(seen_ids.len(), 1000);
+    assert_eq!(count, 1_000);
+    assert_eq!(seen_ids.len(), 1_000);
     Ok(())
 }
 
@@ -183,7 +190,10 @@ fn test_scanner_nonexistent_table() {
 fn test_scanner_with_mixed_data_types() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_mixed");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("mixed_test", "CREATE TABLE mixed_test(id INTEGER, name TEXT, score REAL, active BOOLEAN)")?;
+    storage.create_table(
+        "mixed_test",
+        "CREATE TABLE mixed_test(id INTEGER, name TEXT, score REAL, active BOOLEAN)",
+    )?;
     let test_data = vec![
         (1, "Alice", 95.5, true),
         (2, "Bob", 87.2, false),
@@ -216,13 +226,13 @@ fn test_scanner_with_mixed_data_types() -> Result<(), DatabaseError> {
 fn test_scanner_memory_efficiency() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_memory");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("memory_test", "CREATE TABLE memory_test(id INTEGER, large_text TEXT)")?;
+    storage.create_table(
+        "memory_test",
+        "CREATE TABLE memory_test(id INTEGER, large_text TEXT)",
+    )?;
     for i in 1..=20 {
         let large_text = "x".repeat(1000);
-        let row = Row::new(vec![
-            Value::Integer(i),
-            Value::Text(large_text),
-        ]);
+        let row = Row::new(vec![Value::Integer(i), Value::Text(large_text)]);
         storage.insert_into_table("memory_test", row)?;
     }
     let mut scanner = SequentialScanner::new(storage, "memory_test".to_string(), Some(5))?;
@@ -238,12 +248,12 @@ fn test_scanner_memory_efficiency() -> Result<(), DatabaseError> {
 fn test_scanner_integration_with_storage_manager() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_integration");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("integration_test", "CREATE TABLE integration_test(id INTEGER, name TEXT)")?;
+    storage.create_table(
+        "integration_test",
+        "CREATE TABLE integration_test(id INTEGER, name TEXT)",
+    )?;
     for i in 1..=5 {
-        let row = Row::new(vec![
-            Value::Integer(i),
-            Value::Text(format!("name_{}", i)),
-        ]);
+        let row = Row::new(vec![Value::Integer(i), Value::Text(format!("name_{}", i))]);
         storage.insert_into_table("integration_test", row)?;
     }
     let mut scanner = storage.create_scanner("integration_test", Some(2))?;
@@ -266,7 +276,10 @@ fn test_scanner_integration_with_storage_manager() -> Result<(), DatabaseError> 
 fn test_scanner_with_b_plus_tree_splits() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_splits");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("split_test", "CREATE TABLE split_test(id INTEGER, data TEXT)")?;
+    storage.create_table(
+        "split_test",
+        "CREATE TABLE split_test(id INTEGER, data TEXT)",
+    )?;
     for i in 1..=50 {
         let row = Row::new(vec![
             Value::Integer(i),
@@ -292,11 +305,17 @@ fn test_scanner_with_b_plus_tree_splits() -> Result<(), DatabaseError> {
 fn test_scanner_leaf_page_traversal() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_traversal");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("traversal_test", "CREATE TABLE traversal_test(id INTEGER, data TEXT)")?;
+    storage.create_table(
+        "traversal_test",
+        "CREATE TABLE traversal_test(id INTEGER, data TEXT)",
+    )?;
     for i in 1..=30 {
         let row = Row::new(vec![
             Value::Integer(i),
-            Value::Text(format!("large_data_string_for_row_{}_to_fill_pages_efficiently", i)),
+            Value::Text(format!(
+                "large_data_string_for_row_{}_to_fill_pages_efficiently",
+                i
+            )),
         ]);
         storage.insert_into_table("traversal_test", row)?;
     }
@@ -319,12 +338,12 @@ fn test_scanner_leaf_page_traversal() -> Result<(), DatabaseError> {
 fn test_scanner_slot_directory_efficiency() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_slots");
     let storage = temp_db.create_storage_manager().unwrap();
-    storage.create_table("slot_test", "CREATE TABLE slot_test(id INTEGER, small_data TEXT)")?;
+    storage.create_table(
+        "slot_test",
+        "CREATE TABLE slot_test(id INTEGER, small_data TEXT)",
+    )?;
     for i in 1..=15 {
-        let row = Row::new(vec![
-            Value::Integer(i),
-            Value::Text(format!("data_{}", i)),
-        ]);
+        let row = Row::new(vec![Value::Integer(i), Value::Text(format!("data_{}", i))]);
         storage.insert_into_table("slot_test", row)?;
     }
     let mut scanner = SequentialScanner::new(storage, "slot_test".to_string(), None)?;

@@ -6,7 +6,11 @@ use std::{
 };
 
 use crate::{
-    executor::{scan::Scanner, sequential_scan::SequentialScanner},
+    executor::{
+        insert::{Inserter, TableInserter},
+        scan::Scanner,
+        sequential_scan::SequentialScanner
+    },
     storage::{bplus_tree::BPlusTree, header::BambangHeader, BAMBANG_HEADER_SIZE},
     types::{
         error::DatabaseError, page::{Page, PageType}, row::Row, value::Value, PageId, PAGE_SIZE
@@ -162,20 +166,18 @@ impl StorageManager {
     }
 
     pub fn insert_into_table(&mut self, table_name: &str, row: Row) -> Result<(), DatabaseError> {
-        let root_page_id = self.table_roots.get(table_name).copied().ok_or_else(|| {
-            DatabaseError::TableNotFound {
-                name: table_name.to_string(),
+        // Create a TableInserter and delegate the insertion
+        let mut inserter = TableInserter::new(self, table_name.to_string())?;
+        inserter.insert(row)?;
+        
+        // Update the root page ID if it changed during insertion
+        let new_root_page_id = inserter.root_page_id();
+        if let Some(current_root) = self.table_roots.get(table_name) {
+            if *current_root != new_root_page_id {
+                self.update_table_root(table_name, new_root_page_id)?;
             }
-        })?;
-        let table_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.db_info.path)?;
-        let mut table_btree =
-            BPlusTree::new_with_extras(table_file, root_page_id, Some(BAMBANG_HEADER_SIZE as u64))?;
-        if let Some(new_root) = table_btree.insert(row, Some(BAMBANG_HEADER_SIZE as u64))? {
-            self.update_table_root(table_name, new_root)?;
         }
+        
         Ok(())
     }
 
@@ -245,5 +247,31 @@ impl StorageManager {
         }
 
         Ok(rows)
+    }
+
+    /// Create a table inserter for the specified table
+    pub fn create_inserter(&self, table_name: &str) -> Result<TableInserter, DatabaseError> {
+        TableInserter::new(self, table_name.to_string())
+    }
+
+    /// Insert multiple rows into a table using batch insertion
+    pub fn insert_batch_into_table(&mut self, table_name: &str, rows: Vec<Row>) -> Result<(), DatabaseError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        // Create a TableInserter and delegate the batch insertion
+        let mut inserter = TableInserter::new(self, table_name.to_string())?;
+        inserter.insert_batch(rows)?;
+        
+        // Update the root page ID if it changed during insertion
+        let new_root_page_id = inserter.root_page_id();
+        if let Some(current_root) = self.table_roots.get(table_name) {
+            if *current_root != new_root_page_id {
+                self.update_table_root(table_name, new_root_page_id)?;
+            }
+        }
+        
+        Ok(())
     }
 }

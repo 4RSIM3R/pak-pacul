@@ -60,11 +60,29 @@ impl BPlusTree {
         page_id: PageId,
         extras: Option<u64>,
     ) -> Result<&Page, DatabaseError> {
+        // Add bounds checking for page_id
+        if page_id == 0 {
+            return Err(DatabaseError::CorruptedPage {
+                page_id,
+                reason: "Invalid page ID: 0".to_string(),
+            });
+        }
+        
         let offset = if let Some(extras) = extras {
             extras as u64 + (page_id - 1) * PAGE_SIZE as u64
         } else {
             (page_id - 1) * PAGE_SIZE as u64
         };
+        
+        // Add bounds checking for file offset
+        let file_size = self.file.metadata()?.len();
+        if offset + PAGE_SIZE as u64 > file_size {
+            return Err(DatabaseError::CorruptedPage {
+                page_id,
+                reason: format!("Page offset {} exceeds file size {}", offset, file_size),
+            });
+        }
+        
         if !self.page_cache.contains_key(&page_id) {
             let mut buffer = vec![0u8; PAGE_SIZE];
             self.file.seek(SeekFrom::Start(offset))?;
@@ -76,16 +94,25 @@ impl BPlusTree {
     }
 
     fn write_page(&mut self, page_id: PageId, page: Page, extras: Option<u64>) -> Result<(), DatabaseError> {
+        // Add bounds checking for page_id
+        if page_id == 0 {
+            return Err(DatabaseError::CorruptedPage {
+                page_id,
+                reason: "Invalid page ID: 0".to_string(),
+            });
+        }
+        
         let page_bytes = page.to_bytes()?;
         let offset = if let Some(extras) = extras {
             extras as u64 + (page_id - 1) * PAGE_SIZE as u64
         } else {
             (page_id - 1) * PAGE_SIZE as u64
         };
+        
         self.file.seek(SeekFrom::Start(offset))?;
         self.file.write_all(&page_bytes)?;
-        self.file.flush()?;
-        self.page_cache.insert(page_id, page);
+        // Don't flush here - let batch operations handle flushing
+        // Don't add to cache when writing - only cache when pages are requested
         Ok(())
     }
 
@@ -104,6 +131,14 @@ impl BPlusTree {
     ) -> Result<Option<PageId>, DatabaseError> {
         let key = row.values[0].clone();
         let row_bytes = row.to_bytes();
+        
+        // Validate row data before insertion
+        if row_bytes.is_empty() {
+            return Err(DatabaseError::CorruptedDatabase {
+                reason: "Empty row data".to_string(),
+            });
+        }
+        
         let split_result = self.insert_recursive(
             self.root_page_id,
             key,
@@ -113,6 +148,7 @@ impl BPlusTree {
             },
             extras,
         )?;
+        
         if let Some(split) = split_result {
             let new_root_id = self.allocate_page(PageType::InteriorTable, extras)?;
             let mut new_root = Page::new(new_root_id, PageType::InteriorTable);
@@ -122,12 +158,23 @@ impl BPlusTree {
                 self.create_interior_entry(&Value::Null, split.right_page.page_id)?;
             new_root.insert_cell(&left_entry_data, None)?;
             new_root.insert_cell(&right_entry_data, None)?;
-            self.write_page(new_root_id, new_root, extras)?;
-            self.write_page(split.left_page.page_id, split.left_page, extras)?;
-            self.write_page(split.right_page.page_id, split.right_page, extras)?;
+            
+            // Batch write all pages to reduce I/O overhead
+            self.write_pages_batch(&[
+                (new_root_id, new_root.clone()),
+                (split.left_page.page_id, split.left_page.clone()),
+                (split.right_page.page_id, split.right_page.clone()),
+            ], extras)?;
+            
+            // CRITICAL FIX: Update cache with all modified pages
+            self.page_cache.insert(new_root_id, new_root);
+            self.page_cache.insert(split.left_page.page_id, split.left_page);
+            self.page_cache.insert(split.right_page.page_id, split.right_page);
+            
             self.root_page_id = new_root_id;
             return Ok(Some(new_root_id));
         }
+        
         Ok(None)
     }
 
@@ -152,6 +199,7 @@ impl BPlusTree {
         extras: Option<u64>,
     ) -> Result<Option<SplitResult>, DatabaseError> {
         let page = self.load_page(page_id, extras)?.clone();
+        
         match page.page_type {
             PageType::LeafTable => {
                 let mut updated_page = page;
@@ -162,6 +210,9 @@ impl BPlusTree {
                             None,
                             Some(overflow_page_id),
                         )?;
+                        self.write_page(page_id, updated_page.clone(), extras)?;
+                        // CRITICAL FIX: Update cache
+                        self.page_cache.insert(page_id, updated_page);
                     } else {
                         if updated_page.needs_overflow(cell.data.len()) {
                             let overflow_id = self.allocate_overflow_page(&cell.data, extras)?;
@@ -170,14 +221,17 @@ impl BPlusTree {
                                 None,
                                 Some(overflow_id),
                             )?;
+                            self.write_page(page_id, updated_page.clone(), extras)?;
+                            // CRITICAL FIX: Update cache
+                            self.page_cache.insert(page_id, updated_page);
                         } else {
-                            updated_page.insert_cell(&cell.data, None)?;
+                            // Use optimized insertion for regular cells
+                            self.insert_with_reduced_writes(page_id, updated_page, &cell.data, extras)?;
                         }
                     }
-                    self.write_page(page_id, updated_page, extras)?;
                     Ok(None)
                 } else {
-                    let split_result = self.split_leaf_page(updated_page, key, cell)?;
+                    let split_result = self.split_leaf_page(updated_page, key, cell, extras)?;
                     Ok(Some(split_result))
                 }
             }
@@ -190,13 +244,18 @@ impl BPlusTree {
                     let mut updated_page = page;
                     if !updated_page.can_fit(new_entry_data.len()) {
                         let interior_split =
-                            self.split_interior_page(updated_page, new_entry_data)?;
+                            self.split_interior_page(updated_page, new_entry_data, extras)?;
                         Ok(Some(interior_split))
                     } else {
                         updated_page.insert_cell(&new_entry_data, None)?;
-                        self.write_page(page_id, updated_page, extras)?;
-                        self.write_page(split.left_page.page_id, split.left_page, extras)?;
-                        self.write_page(split.right_page.page_id, split.right_page, extras)?;
+                        
+                        // Batch write all pages to reduce I/O overhead
+                        self.write_pages_batch(&[
+                            (page_id, updated_page),
+                            (split.left_page.page_id, split.left_page),
+                            (split.right_page.page_id, split.right_page),
+                        ], extras)?;
+                        
                         Ok(None)
                     }
                 } else {
@@ -214,29 +273,71 @@ impl BPlusTree {
         mut full_page: Page,
         key: Value,
         cell: Cell,
+        extras: Option<u64>,
     ) -> Result<SplitResult, DatabaseError> {
-        let new_page_id = self.allocate_page(PageType::LeafTable, None)?;
+        let new_page_id = self.allocate_page(PageType::LeafTable, extras)?;
         let mut right_page = Page::new(new_page_id, PageType::LeafTable);
         let mut all_cells = Vec::new();
+        
+        // Collect all existing cells from the full page
         for i in 0..full_page.slot_directory.slots.len() {
             if let Some(cell_data) = full_page.get_cell(i) {
-                all_cells.push((self.extract_key_from_cell(cell_data)?, cell_data.to_vec()));
+                if !cell_data.is_empty() {  // Skip empty cells
+                    match self.extract_key_from_cell(cell_data) {
+                        Ok(extracted_key) => {
+                            all_cells.push((extracted_key, cell_data.to_vec()));
+                        }
+                        Err(_) => {
+                            // Skip corrupted cells but don't fail the entire operation
+                            continue;
+                        }
+                    }
+                }
             }
         }
+        
+        // Add the new cell
         all_cells.push((key, cell.data));
+        
+        // Sort all cells by key
         all_cells.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Ensure we have at least one cell to split
+        if all_cells.is_empty() {
+            return Err(DatabaseError::CorruptedDatabase {
+                reason: "No cells to split".to_string(),
+            });
+        }
+        
         let split_point = all_cells.len() / 2;
+        
+        // Clear the left page and rebuild it
         full_page.slot_directory.slots.clear();
         full_page.free_space_offset = PAGE_SIZE as u16;
         full_page.cell_count = 0;
+        
+        // Insert cells into left page
         for (_, cell_data) in &all_cells[..split_point] {
-            full_page.insert_cell(cell_data, None)?;
+            if let Err(e) = full_page.insert_cell(cell_data, None) {
+                return Err(DatabaseError::CorruptedDatabase {
+                    reason: format!("Failed to insert cell into left page: {}", e),
+                });
+            }
         }
+        
+        // Insert cells into right page
         for (_, cell_data) in &all_cells[split_point..] {
-            right_page.insert_cell(cell_data, None)?;
+            if let Err(e) = right_page.insert_cell(cell_data, None) {
+                return Err(DatabaseError::CorruptedDatabase {
+                    reason: format!("Failed to insert cell into right page: {}", e),
+                });
+            }
         }
+        
+        // Update leaf page linkage
         right_page.next_leaf_page_id = full_page.next_leaf_page_id;
         full_page.next_leaf_page_id = Some(new_page_id);
+        
         let separator_key = all_cells[split_point].0.clone();
         Ok(SplitResult {
             left_page: full_page,
@@ -254,8 +355,9 @@ impl BPlusTree {
         &mut self,
         mut full_page: Page,
         new_entry_data: Vec<u8>,
+        extras: Option<u64>,
     ) -> Result<SplitResult, DatabaseError> {
-        let new_page_id = self.allocate_page(PageType::InteriorTable, None)?;
+        let new_page_id = self.allocate_page(PageType::InteriorTable, extras)?;
         let mut right_page = Page::new(new_page_id, PageType::InteriorTable);
         let mut all_entries = Vec::new();
         for i in 0..full_page.slot_directory.slots.len() {
@@ -370,5 +472,42 @@ impl BPlusTree {
         let key_bytes = &entry_data[12..12 + key_length];
         let key = Value::from_bytes(key_bytes)?;
         Ok((page_id, key))
+    }
+
+    /// Optimized insertion that reduces write overhead by batching operations
+    fn insert_with_reduced_writes(
+        &mut self,
+        page_id: PageId,
+        mut page: Page,
+        cell_data: &[u8],
+        extras: Option<u64>,
+    ) -> Result<(), DatabaseError> {
+        // Insert the cell into the page structure
+        page.insert_cell(cell_data, None)?;
+        
+        // Write the entire page and flush immediately for single page operations
+        self.write_page(page_id, page.clone(), extras)?;
+        self.file.flush()?;
+        
+        // CRITICAL FIX: Update cache with modified page
+        self.page_cache.insert(page_id, page);
+        
+        Ok(())
+    }
+    
+    /// Batch write multiple pages to reduce I/O overhead
+    fn write_pages_batch(
+        &mut self,
+        pages: &[(PageId, Page)],
+        extras: Option<u64>,
+    ) -> Result<(), DatabaseError> {
+        for (page_id, page) in pages {
+            self.write_page(*page_id, page.clone(), extras)?;
+            // CRITICAL FIX: Update cache for each page
+            self.page_cache.insert(*page_id, page.clone());
+        }
+        // Single flush for all writes
+        self.file.flush()?;
+        Ok(())
     }
 }

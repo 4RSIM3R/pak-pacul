@@ -140,24 +140,6 @@ pub struct PageStats {
     pub utilization_ratio: f32,
 }
 
-/*
- * Enhanced Page Layout on Disk (Slotted Page Structure)
- * ┌─────────────────────────────────────────────────────────────────┐
- * │                    PAGE HEADER (36 bytes)                       │
- * │  page_id(8) | page_type(1) | parent_id(8) | next_leaf(8) |      │
- * │  cell_count(2) | free_space_offset(2) | checksum(4) |           │
- * │  reserved(3)                                                    │
- * ├─────────────────────────────────────────────────────────────────┤
- * │                  SLOT DIRECTORY                                 │
- * │  [slot0] [slot1] [slot2] ...                                    │
- * ├─────────────────────────────────────────────────────────────────┤
- * │                    FREE SPACE                                   │
- * │                                                                 │
- * ├─────────────────────────────────────────────────────────────────┤
- * │                   CELL DATA                                     │
- * │  [...cell N...] [...cell 2...] [...cell 1...] [...cell 0...]    │
- * └─────────────────────────────────────────────────────────────────┘
- */
 #[derive(Debug, Clone)]
 pub struct Page {
     pub page_id: PageId,
@@ -1063,7 +1045,7 @@ impl Page {
         Ok(buffer)
     }
 
-    fn write_header(&self, cursor: &mut Cursor<&mut Vec<u8>>) {
+    pub fn write_header(&self, cursor: &mut Cursor<&mut Vec<u8>>) {
         let buffer = cursor.get_mut();
         let mut offset = 0;
 
