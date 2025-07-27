@@ -149,6 +149,7 @@ impl StorageManager {
 
         let row_bytes = schema_table_row.to_bytes();
         let _ = schema_page.insert_cell(&row_bytes, Some(1));
+        
 
         schema_page
     }

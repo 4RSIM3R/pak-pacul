@@ -1,0 +1,4 @@
+- Complete CREATE TABLE and CREATE INDEX capabilities
+    - That's mean completing the B+ Tree common operation like insert, split, etc..
+    - Test by create N-number table and N-number index
+- Develop base schema and catalog system, using that sqlite schema
