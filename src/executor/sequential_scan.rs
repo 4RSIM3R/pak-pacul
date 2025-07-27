@@ -1,9 +1,18 @@
-use std::{collections::VecDeque, fs::File, io::{Read, Seek, SeekFrom}};
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+};
 
 use crate::{
-    executor::scan::Scanner, storage::storage_manager::StorageManager, types::{
-        error::DatabaseError, page::{Page, PageType}, row::Row, PageId, PAGE_SIZE
-    }
+    executor::scan::Scanner,
+    storage::storage_manager::StorageManager,
+    types::{
+        PAGE_SIZE, PageId,
+        error::DatabaseError,
+        page::{Page, PageType},
+        row::Row,
+    },
 };
 
 pub struct SequentialScanner {
@@ -48,11 +57,10 @@ impl SequentialScanner {
         })
     }
     fn page_offset(&self, page_id: PageId) -> u64 {
-        if let Some(extras) = self.extras {
-            extras + (page_id - 1) * PAGE_SIZE as u64
-        } else {
-            (page_id - 1) * PAGE_SIZE as u64
-        }
+        let header_offset = self
+            .extras
+            .unwrap_or(crate::storage::BAMBANG_HEADER_SIZE as u64);
+        header_offset + (page_id - 1) * PAGE_SIZE as u64
     }
     fn find_first_leaf(&mut self) -> Result<PageId, DatabaseError> {
         let mut current_page_id = self.root_page_id;
@@ -135,6 +143,7 @@ impl SequentialScanner {
         Ok(())
     }
     fn get_next_page(&mut self) -> Result<Option<(PageId, Page)>, DatabaseError> {
+        // First, try to use prefetched pages
         if let Some(page) = self.read_ahead_pages.pop_front() {
             if let Some(page_id) = self.current_page_id {
                 let current_page = self.load_page_metadata(page_id)?;
@@ -143,6 +152,8 @@ impl SequentialScanner {
                 }
             }
         }
+
+        // If no prefetched pages, load the next page directly
         if let Some(current_id) = self.current_page_id {
             let current_page = self.load_page_metadata(current_id)?;
             if let Some(next_id) = current_page.next_leaf_page_id {
@@ -150,6 +161,7 @@ impl SequentialScanner {
                 return Ok(Some((next_id, next_page)));
             }
         }
+
         Ok(None)
     }
 }
@@ -175,7 +187,9 @@ impl Scanner for SequentialScanner {
                     }
                     let row = self.read_row_from_slot(page_id, slot)?;
                     self.current_slot_index += 1;
-                    if self.current_slot_index >= page.slot_directory.slots.len() - 2 {
+                    // Prefetch next page when we're near the end of current page
+                    if self.current_slot_index >= page.slot_directory.slots.len().saturating_sub(2)
+                    {
                         let _ = self.prefetch_next_page(&page);
                     }
                     return Ok(Some(row));

@@ -122,7 +122,7 @@ fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
     let mut temp_db = TempDatabase::with_prefix("scan_large");
     let storage = temp_db.create_storage_manager().unwrap();
     storage.create_table("large_test", "CREATE TABLE large_test(id INTEGER, data TEXT)")?;
-    for i in 1..=100 {
+    for i in 1..=10_000 {
         let row = Row::new(vec![
             Value::Integer(i),
             Value::Text(format!("data_string_for_row_{}_with_some_padding", i)),
@@ -138,7 +138,7 @@ fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
         if let Value::Integer(id) = &row.values[0] {
             assert!(!seen_ids.contains(id), "Duplicate ID found: {}", id);
             seen_ids.insert(*id);
-            assert!(*id >= 1 && *id <= 100);
+            assert!(*id >= 1 && *id <= 1000);
         } else {
             panic!("Expected integer ID");
         }
@@ -148,8 +148,8 @@ fn test_scanner_with_large_dataset() -> Result<(), DatabaseError> {
             panic!("Expected text data");
         }
     }
-    assert_eq!(count, 100);
-    assert_eq!(seen_ids.len(), 100);
+    assert_eq!(count, 1000);
+    assert_eq!(seen_ids.len(), 1000);
     Ok(())
 }
 
