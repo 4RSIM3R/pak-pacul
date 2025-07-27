@@ -1,75 +1,10 @@
-use std::{
-    env::temp_dir,
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
 use bambang::{
     storage::storage_manager::StorageManager,
     types::{row::Row, value::Value},
+    utils::mock::{TempDatabase, create_temp_db_path_with_prefix},
 };
-
-fn get_unix_timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis()
-}
-
-fn create_temp_db_path() -> PathBuf {
-    let mut temp_path = temp_dir();
-    temp_path.push(format!("bambang_test_{}.db", get_unix_timestamp_millis()));
-    temp_path
-}
-
-fn create_temp_db_path_with_prefix(prefix: &str) -> PathBuf {
-    let mut temp_path = temp_dir();
-    temp_path.push(format!("{}_{}.db", prefix, get_unix_timestamp_millis()));
-    temp_path
-}
-
-struct TempDatabase {
-    pub path: PathBuf,
-    pub storage_manager: Option<StorageManager>,
-}
-
-impl TempDatabase {
-    fn new() -> Self {
-        Self {
-            path: create_temp_db_path(),
-            storage_manager: None,
-        }
-    }
-
-    fn with_prefix(prefix: &str) -> Self {
-        Self {
-            path: create_temp_db_path_with_prefix(prefix),
-            storage_manager: None,
-        }
-    }
-
-    fn create_storage_manager(
-        &mut self,
-    ) -> Result<&mut StorageManager, Box<dyn std::error::Error>> {
-        let sm = StorageManager::new(&self.path)?;
-        self.storage_manager = Some(sm);
-        Ok(self.storage_manager.as_mut().unwrap())
-    }
-
-    fn get_storage_manager(&mut self) -> Option<&mut StorageManager> {
-        self.storage_manager.as_mut()
-    }
-}
-
-impl Drop for TempDatabase {
-    fn drop(&mut self) {
-        self.storage_manager = None;
-        if self.path.exists() {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
 
 fn create_user_row(id: i64, name: &str, email: &str) -> Row {
     Row::new(vec![

@@ -6,13 +6,10 @@ use std::{
 };
 
 use crate::{
-    storage::{BAMBANG_HEADER_SIZE, bplus_tree::BPlusTree, header::BambangHeader},
+    executor::{scan::Scanner, sequential_scan::SequentialScanner},
+    storage::{bplus_tree::BPlusTree, header::BambangHeader, BAMBANG_HEADER_SIZE},
     types::{
-        PAGE_SIZE, PageId,
-        error::DatabaseError,
-        page::{Page, PageType},
-        row::Row,
-        value::Value,
+        error::DatabaseError, page::{Page, PageType}, row::Row, value::Value, PageId, PAGE_SIZE
     },
 };
 
@@ -39,7 +36,10 @@ impl StorageManager {
             println!("Creating new database at path: {}", path.display());
             Self::create_new(path)?
         };
-        let file = OpenOptions::new().read(true).write(true).open(&db_info.path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&db_info.path)?;
         let mut storage_manager = Self {
             db_info,
             file,
@@ -70,7 +70,12 @@ impl StorageManager {
 
     pub fn create_new<P: AsRef<Path>>(path: P) -> Result<DatabaseInfo, DatabaseError> {
         let path = path.as_ref();
-        let mut file = OpenOptions::new().create(true).write(true).read(true).truncate(true).open(path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .truncate(true)
+            .open(path)?;
         let header = BambangHeader::default();
         file.write_all(&header.to_bytes())?;
         let schema_page = Self::init_schema_page();
@@ -120,8 +125,11 @@ impl StorageManager {
             if let Some(cell_data) = schema_page.get_cell(i) {
                 let row = Row::from_bytes(cell_data)?;
                 if row.values.len() >= 4 {
-                    if let (Value::Text(table_name), Value::Integer(root_page)) = (&row.values[1], &row.values[3]) {
-                        self.table_roots.insert(table_name.clone(), *root_page as PageId);
+                    if let (Value::Text(table_name), Value::Integer(root_page)) =
+                        (&row.values[1], &row.values[3])
+                    {
+                        self.table_roots
+                            .insert(table_name.clone(), *root_page as PageId);
                     }
                 }
             }
@@ -138,12 +146,18 @@ impl StorageManager {
             Value::Integer(new_root_page_id as i64),
             Value::Text(sql.to_string()),
         ]);
-        let schema_file = OpenOptions::new().read(true).write(true).open(&self.db_info.path)?;
-        let mut schema_btree = BPlusTree::new_with_extras(schema_file, 1, Some(BAMBANG_HEADER_SIZE as u64))?;
+        let schema_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.db_info.path)?;
+        let mut schema_btree =
+            BPlusTree::new_with_extras(schema_file, 1, Some(BAMBANG_HEADER_SIZE as u64))?;
         if let Some(new_root) = schema_btree.insert(schema_row, Some(BAMBANG_HEADER_SIZE as u64))? {
-            self.table_roots.insert("sqlite_schema".to_string(), new_root);
+            self.table_roots
+                .insert("sqlite_schema".to_string(), new_root);
         }
-        self.table_roots.insert(table_name.to_string(), new_root_page_id);
+        self.table_roots
+            .insert(table_name.to_string(), new_root_page_id);
         Ok(new_root_page_id)
     }
 
@@ -153,17 +167,29 @@ impl StorageManager {
                 name: table_name.to_string(),
             }
         })?;
-        let table_file = OpenOptions::new().read(true).write(true).open(&self.db_info.path)?;
-        let mut table_btree = BPlusTree::new_with_extras(table_file, root_page_id, Some(BAMBANG_HEADER_SIZE as u64))?;
+        let table_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.db_info.path)?;
+        let mut table_btree =
+            BPlusTree::new_with_extras(table_file, root_page_id, Some(BAMBANG_HEADER_SIZE as u64))?;
         if let Some(new_root) = table_btree.insert(row, Some(BAMBANG_HEADER_SIZE as u64))? {
             self.update_table_root(table_name, new_root)?;
         }
         Ok(())
     }
 
-    fn update_table_root(&mut self, table_name: &str, new_root_page_id: PageId) -> Result<(), DatabaseError> {
-        self.table_roots.insert(table_name.to_string(), new_root_page_id);
-        println!("Updated root page for table '{}' to page {}", table_name, new_root_page_id);
+    fn update_table_root(
+        &mut self,
+        table_name: &str,
+        new_root_page_id: PageId,
+    ) -> Result<(), DatabaseError> {
+        self.table_roots
+            .insert(table_name.to_string(), new_root_page_id);
+        println!(
+            "Updated root page for table '{}' to page {}",
+            table_name, new_root_page_id
+        );
         Ok(())
     }
 
@@ -198,5 +224,26 @@ impl StorageManager {
         let row_bytes = schema_table_row.to_bytes();
         let _ = schema_page.insert_cell(&row_bytes, None);
         schema_page
+    }
+
+    /// Create a sequential scanner for the specified table
+    pub fn create_scanner(
+        &self,
+        table_name: &str,
+        batch_size: Option<usize>,
+    ) -> Result<SequentialScanner, DatabaseError> {
+        SequentialScanner::new(self, table_name.to_string(), batch_size)
+    }
+
+    /// Scan all rows from a table using the scanner
+    pub fn scan_table(&self, table_name: &str) -> Result<Vec<Row>, DatabaseError> {
+        let mut scanner = self.create_scanner(table_name, None)?;
+        let mut rows = Vec::new();
+
+        while let Some(row) = scanner.scan()? {
+            rows.push(row);
+        }
+
+        Ok(rows)
     }
 }

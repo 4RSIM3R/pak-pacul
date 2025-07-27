@@ -1,9 +1,14 @@
 use std::io::Write;
 
-use bambang::{art::welcome_message, storage::storage_manager::StorageManager};
-use rustyline::{DefaultEditor, Result, error::ReadlineError};
+use bambang::{
+    art::welcome_message,
+    executor::scan::Scanner,
+    storage::storage_manager::StorageManager,
+    types::{row::Row, value::Value, error::DatabaseError},
+};
+use rustyline::{DefaultEditor, error::ReadlineError};
 
-fn read_multiline_command(rl: &mut DefaultEditor) -> Result<String> {
+fn read_multiline_command(rl: &mut DefaultEditor) -> Result<String, ReadlineError> {
     let mut input = String::new();
     let mut prompt = "bambang> ".to_string();
 
@@ -74,41 +79,77 @@ Use Up/Down arrows to navigate command history.
     true
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), ReadlineError> {
     let welcome = welcome_message("BAMBANG DB");
     println!("{}", welcome);
 
-    let storage = StorageManager::new("test.db").expect("Failed to open database");
+    // Demonstrate scanner functionality
+    demo_scanner_functionality().unwrap_or_else(|e| {
+        eprintln!("Scanner demo failed: {:?}", e);
+    });
 
-    // let mut rl = DefaultEditor::new()?;
-    // rl.load_history("history.txt")?;
+    Ok(())
+}
 
-    // loop {
-    //     match read_multiline_command(&mut rl) {
-    //         Ok(input) => {
-    //             let command = input.trim().to_string();
-
-    //             if !command.is_empty() {
-    //                 rl.add_history_entry(&command)?;
-    //                 if !process_command(&command) {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //         Err(ReadlineError::Interrupted) => {
-    //             println!("Interrupted");
-    //             break;
-    //         }
-    //         Err(ReadlineError::Eof) => {
-    //             println!("EOF");
-    //             break;
-    //         }
-    //         Err(err) => {
-    //             println!("Error: {:?}", err);
-    //             break;
-    //         }
-    //     }
-    // }
-
+fn demo_scanner_functionality() -> Result<(), DatabaseError> {
+    println!("\n=== Scanner Functionality Demo ===");
+    
+    // Create a temporary database
+    let temp_path = "demo_scan.db";
+    let mut storage = StorageManager::new(temp_path)?;
+    
+    // Create a test table
+    println!("Creating test table...");
+    storage.create_table("users", "CREATE TABLE users(id INTEGER, name TEXT, age INTEGER)")?;
+    
+    // Insert test data
+    println!("Inserting test data...");
+    for i in 1..=10 {
+        let row = Row::new(vec![
+            Value::Integer(i),
+            Value::Text(format!("User_{}", i)),
+            Value::Integer(20 + (i % 50)),
+        ]);
+        storage.insert_into_table("users", row)?;
+    }
+    
+    // Demonstrate sequential scanning
+    println!("\n--- Sequential Scan Results ---");
+    let mut scanner = storage.create_scanner("users", Some(3))?; // Batch size of 3
+    
+    let mut count = 0;
+    while let Some(row) = scanner.scan()? {
+        count += 1;
+        println!("Row {}: {:?}", count, row.values);
+    }
+    
+    println!("\nTotal rows scanned: {}", count);
+    
+    // Demonstrate batch scanning
+    println!("\n--- Batch Scan Results ---");
+    scanner.reset()?;
+    
+    let mut batch_count = 0;
+    loop {
+        let batch = scanner.scan_batch(3)?;
+        if batch.is_empty() {
+            break;
+        }
+        batch_count += 1;
+        println!("Batch {}: {} rows", batch_count, batch.len());
+        for (i, row) in batch.iter().enumerate() {
+            println!("  Row {}: {:?}", i + 1, row.values);
+        }
+    }
+    
+    // Demonstrate using storage manager's scan_table method
+    println!("\n--- Full Table Scan ---");
+    let all_rows = storage.scan_table("users")?;
+    println!("Retrieved {} rows using scan_table()", all_rows.len());
+    
+    // Clean up
+    std::fs::remove_file(temp_path).ok();
+    
+    println!("\n=== Scanner Demo Complete ===");
     Ok(())
 }
