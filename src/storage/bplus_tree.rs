@@ -35,8 +35,17 @@ pub struct BPlusTree {
 
 impl BPlusTree {
     pub fn new(file: File, root_page_id: PageId) -> Result<Self, DatabaseError> {
+        Self::new_with_extras(file, root_page_id, None)
+    }
+
+    pub fn new_with_extras(file: File, root_page_id: PageId, extras: Option<u64>) -> Result<Self, DatabaseError> {
         let file_size = file.metadata()?.len();
-        let next_page_id = ((file_size / PAGE_SIZE as u64) + 1) as PageId;
+        let data_size = if let Some(extras) = extras {
+            file_size.saturating_sub(extras)
+        } else {
+            file_size
+        };
+        let next_page_id = ((data_size / PAGE_SIZE as u64) + 1) as PageId;
         Ok(Self {
             root_page_id,
             file,
@@ -66,21 +75,25 @@ impl BPlusTree {
         Ok(self.page_cache.get(&page_id).unwrap())
     }
 
-    fn write_page(&mut self, page_id: PageId, page: Page) -> Result<(), DatabaseError> {
+    fn write_page(&mut self, page_id: PageId, page: Page, extras: Option<u64>) -> Result<(), DatabaseError> {
         let page_bytes = page.to_bytes()?;
-        self.file
-            .seek(SeekFrom::Start((page_id - 1) as u64 * PAGE_SIZE as u64))?;
+        let offset = if let Some(extras) = extras {
+            extras as u64 + (page_id - 1) * PAGE_SIZE as u64
+        } else {
+            (page_id - 1) * PAGE_SIZE as u64
+        };
+        self.file.seek(SeekFrom::Start(offset))?;
         self.file.write_all(&page_bytes)?;
         self.file.flush()?;
         self.page_cache.insert(page_id, page);
         Ok(())
     }
 
-    fn allocate_page(&mut self, page_type: PageType) -> Result<PageId, DatabaseError> {
+    fn allocate_page(&mut self, page_type: PageType, extras: Option<u64>) -> Result<PageId, DatabaseError> {
         let new_page_id = self.next_page_id;
         self.next_page_id += 1;
         let new_page = Page::new(new_page_id, page_type);
-        self.write_page(new_page_id, new_page)?;
+        self.write_page(new_page_id, new_page, extras)?;
         Ok(new_page_id)
     }
 
@@ -101,7 +114,7 @@ impl BPlusTree {
             extras,
         )?;
         if let Some(split) = split_result {
-            let new_root_id = self.allocate_page(PageType::InteriorTable)?;
+            let new_root_id = self.allocate_page(PageType::InteriorTable, extras)?;
             let mut new_root = Page::new(new_root_id, PageType::InteriorTable);
             let left_entry_data =
                 self.create_interior_entry(&split.separator_key, split.left_page.page_id)?;
@@ -109,9 +122,9 @@ impl BPlusTree {
                 self.create_interior_entry(&Value::Null, split.right_page.page_id)?;
             new_root.insert_cell(&left_entry_data, None)?;
             new_root.insert_cell(&right_entry_data, None)?;
-            self.write_page(new_root_id, new_root)?;
-            self.write_page(split.left_page.page_id, split.left_page)?;
-            self.write_page(split.right_page.page_id, split.right_page)?;
+            self.write_page(new_root_id, new_root, extras)?;
+            self.write_page(split.left_page.page_id, split.left_page, extras)?;
+            self.write_page(split.right_page.page_id, split.right_page, extras)?;
             self.root_page_id = new_root_id;
             return Ok(Some(new_root_id));
         }
@@ -151,7 +164,7 @@ impl BPlusTree {
                         )?;
                     } else {
                         if updated_page.needs_overflow(cell.data.len()) {
-                            let overflow_id = self.allocate_overflow_page(&cell.data)?;
+                            let overflow_id = self.allocate_overflow_page(&cell.data, extras)?;
                             updated_page.insert_cell_with_overflow(
                                 &cell.data,
                                 None,
@@ -161,7 +174,7 @@ impl BPlusTree {
                             updated_page.insert_cell(&cell.data, None)?;
                         }
                     }
-                    self.write_page(page_id, updated_page)?;
+                    self.write_page(page_id, updated_page, extras)?;
                     Ok(None)
                 } else {
                     let split_result = self.split_leaf_page(updated_page, key, cell)?;
@@ -181,9 +194,9 @@ impl BPlusTree {
                         Ok(Some(interior_split))
                     } else {
                         updated_page.insert_cell(&new_entry_data, None)?;
-                        self.write_page(page_id, updated_page)?;
-                        self.write_page(split.left_page.page_id, split.left_page)?;
-                        self.write_page(split.right_page.page_id, split.right_page)?;
+                        self.write_page(page_id, updated_page, extras)?;
+                        self.write_page(split.left_page.page_id, split.left_page, extras)?;
+                        self.write_page(split.right_page.page_id, split.right_page, extras)?;
                         Ok(None)
                     }
                 } else {
@@ -202,7 +215,7 @@ impl BPlusTree {
         key: Value,
         cell: Cell,
     ) -> Result<SplitResult, DatabaseError> {
-        let new_page_id = self.allocate_page(PageType::LeafTable)?;
+        let new_page_id = self.allocate_page(PageType::LeafTable, None)?;
         let mut right_page = Page::new(new_page_id, PageType::LeafTable);
         let mut all_cells = Vec::new();
         for i in 0..full_page.slot_directory.slots.len() {
@@ -242,7 +255,7 @@ impl BPlusTree {
         mut full_page: Page,
         new_entry_data: Vec<u8>,
     ) -> Result<SplitResult, DatabaseError> {
-        let new_page_id = self.allocate_page(PageType::InteriorTable)?;
+        let new_page_id = self.allocate_page(PageType::InteriorTable, None)?;
         let mut right_page = Page::new(new_page_id, PageType::InteriorTable);
         let mut all_entries = Vec::new();
         for i in 0..full_page.slot_directory.slots.len() {
@@ -292,13 +305,13 @@ impl BPlusTree {
         Value::from_bytes(key_bytes)
     }
 
-    fn allocate_overflow_page(&mut self, data: &[u8]) -> Result<PageId, DatabaseError> {
-        let overflow_page_id = self.allocate_page(PageType::OverflowPage)?;
+    fn allocate_overflow_page(&mut self, data: &[u8], extras: Option<u64>) -> Result<PageId, DatabaseError> {
+        let overflow_page_id = self.allocate_page(PageType::OverflowPage, extras)?;
         let mut overflow_page = Page::new(overflow_page_id, PageType::OverflowPage);
         let available_space = overflow_page.available_space();
         if data.len() <= available_space {
             overflow_page.insert_cell(data, None)?;
-            self.write_page(overflow_page_id, overflow_page)?;
+            self.write_page(overflow_page_id, overflow_page, extras)?;
             Ok(overflow_page_id)
         } else {
             Err(DatabaseError::CorruptedDatabase {
