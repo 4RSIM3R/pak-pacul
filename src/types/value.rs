@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 
-use bincode::{Decode, Encode};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +16,7 @@ pub enum DataType {
     Timestamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Integer(i64),
@@ -130,6 +129,172 @@ impl Value {
     /// Format timestamp as string (convenience method)
     pub fn format_timestamp(&self, format: &str) -> Option<String> {
         self.to_datetime().map(|dt| dt.format(format).to_string())
+    }
+
+    /// Convert Value to bytes using custom binary format
+    ///
+    /// Binary format:
+    /// - 1 byte: type discriminant (0=Null, 1=Integer, 2=Real, 3=Text, 4=Blob, 5=Boolean, 6=Timestamp)
+    /// - Variable length data based on type
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        match self {
+            Value::Null => {
+                bytes.push(0); // Type discriminant for Null
+                // No additional data
+            }
+            Value::Integer(i) => {
+                bytes.push(1); // Type discriminant for Integer
+                bytes.extend_from_slice(&i.to_le_bytes());
+            }
+            Value::Real(r) => {
+                bytes.push(2); // Type discriminant for Real
+                bytes.extend_from_slice(&r.to_le_bytes());
+            }
+            Value::Text(s) => {
+                bytes.push(3); // Type discriminant for Text
+                let text_bytes = s.as_bytes();
+                // Store length as 4-byte little-endian integer
+                bytes.extend_from_slice(&(text_bytes.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(text_bytes);
+            }
+            Value::Blob(b) => {
+                bytes.push(4); // Type discriminant for Blob
+                // Store length as 4-byte little-endian integer
+                bytes.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(b);
+            }
+            Value::Boolean(b) => {
+                bytes.push(5); // Type discriminant for Boolean
+                bytes.push(if *b { 1 } else { 0 });
+            }
+            Value::Timestamp(ts) => {
+                bytes.push(6); // Type discriminant for Timestamp
+                bytes.extend_from_slice(&ts.to_le_bytes());
+            }
+        }
+
+        bytes
+    }
+
+    /// Create Value from bytes using custom binary format
+    pub fn from_bytes(bytes: &[u8]) -> Result<Value, DatabaseError> {
+        if bytes.is_empty() {
+            return Err(DatabaseError::SerializationError {
+                details: "Empty byte array".to_string(),
+            });
+        }
+
+        let type_discriminant = bytes[0];
+        let data = &bytes[1..];
+
+        match type_discriminant {
+            0 => Ok(Value::Null),
+            1 => {
+                // Integer
+                if data.len() != 8 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid integer data length".to_string(),
+                    });
+                }
+                let mut int_bytes = [0u8; 8];
+                int_bytes.copy_from_slice(data);
+                Ok(Value::Integer(i64::from_le_bytes(int_bytes)))
+            }
+            2 => {
+                // Real
+                if data.len() != 8 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid real data length".to_string(),
+                    });
+                }
+                let mut real_bytes = [0u8; 8];
+                real_bytes.copy_from_slice(data);
+                Ok(Value::Real(f64::from_le_bytes(real_bytes)))
+            }
+            3 => {
+                // Text
+                if data.len() < 4 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid text data: missing length".to_string(),
+                    });
+                }
+                let mut len_bytes = [0u8; 4];
+                len_bytes.copy_from_slice(&data[0..4]);
+                let text_len = u32::from_le_bytes(len_bytes) as usize;
+
+                if data.len() != 4 + text_len {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid text data: length mismatch".to_string(),
+                    });
+                }
+
+                let text_bytes = &data[4..4 + text_len];
+                match String::from_utf8(text_bytes.to_vec()) {
+                    Ok(s) => Ok(Value::Text(s)),
+                    Err(_) => Err(DatabaseError::SerializationError {
+                        details: "Invalid UTF-8 in text data".to_string(),
+                    }),
+                }
+            }
+            4 => {
+                // Blob
+                if data.len() < 4 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid blob data: missing length".to_string(),
+                    });
+                }
+                let mut len_bytes = [0u8; 4];
+                len_bytes.copy_from_slice(&data[0..4]);
+                let blob_len = u32::from_le_bytes(len_bytes) as usize;
+
+                if data.len() != 4 + blob_len {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid blob data: length mismatch".to_string(),
+                    });
+                }
+
+                let blob_data = data[4..4 + blob_len].to_vec();
+                Ok(Value::Blob(blob_data))
+            }
+            5 => {
+                // Boolean
+                if data.len() != 1 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid boolean data length".to_string(),
+                    });
+                }
+                Ok(Value::Boolean(data[0] != 0))
+            }
+            6 => {
+                // Timestamp
+                if data.len() != 8 {
+                    return Err(DatabaseError::SerializationError {
+                        details: "Invalid timestamp data length".to_string(),
+                    });
+                }
+                let mut ts_bytes = [0u8; 8];
+                ts_bytes.copy_from_slice(data);
+                Ok(Value::Timestamp(i64::from_le_bytes(ts_bytes)))
+            }
+            _ => Err(DatabaseError::SerializationError {
+                details: format!("Unknown type discriminant: {}", type_discriminant),
+            }),
+        }
+    }
+
+    /// Get the serialized size in bytes (useful for storage planning)
+    pub fn serialized_size(&self) -> usize {
+        match self {
+            Value::Null => 1,                  // Just the type discriminant
+            Value::Integer(_) => 1 + 8,        // Type + 8 bytes for i64
+            Value::Real(_) => 1 + 8,           // Type + 8 bytes for f64
+            Value::Text(s) => 1 + 4 + s.len(), // Type + length (4 bytes) + string bytes
+            Value::Blob(b) => 1 + 4 + b.len(), // Type + length (4 bytes) + blob bytes
+            Value::Boolean(_) => 1 + 1,        // Type + 1 byte for boolean
+            Value::Timestamp(_) => 1 + 8,      // Type + 8 bytes for i64
+        }
     }
 }
 

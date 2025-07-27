@@ -201,26 +201,6 @@ fn test_display_formatting() {
     assert!(invalid_display.contains("INVALID_TIMESTAMP"));
 }
 
-#[test]
-fn test_serialization_for_persistence() {
-    let values = vec![
-        Value::Null,
-        Value::Integer(42),
-        Value::Real(3.14159),
-        Value::Text("Hello, Database!".to_string()),
-        Value::Blob(vec![0x01, 0x02, 0x03, 0xFF]),
-        Value::Boolean(true),
-        Value::Timestamp(1640995200),
-    ];
-
-    for original_value in values {
-        // Test bincode serialization (for storage)
-        let encoded = bincode::encode_to_vec(&original_value, bincode::config::standard()).unwrap();
-        let (decoded, _): (Value, usize) =
-            bincode::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
-        assert_eq!(original_value, decoded);
-    }
-}
 
 #[test]
 fn test_timestamp_operations() {

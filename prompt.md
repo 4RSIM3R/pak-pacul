@@ -1,3 +1,10 @@
+## Question
+
+I already develop a storage manager, and had the test, looks like it confusing to parse the root table, because we include
+that header, BAMBANG_HEADER_SIZE (100 bytes) on that first page, it is really make hard to parse the page, are you have option
+how to solve it? ensure approach used is re-usable on future usage and not break another function
+
+-- storage_manager.rs
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
@@ -52,28 +59,6 @@ impl StorageManager {
         Ok(storage_manager)
     }
 
-    // Helper method to calculate page offset in file
-    fn page_offset(&self, page_id: PageId) -> u64 {
-        BAMBANG_HEADER_SIZE as u64 + (page_id - 1) * PAGE_SIZE as u64
-    }
-
-    // Helper method to read a clean page without header interference
-    fn read_page(&mut self, page_id: PageId) -> Result<Page, DatabaseError> {
-        let mut buffer = vec![0u8; PAGE_SIZE];
-        self.file.seek(SeekFrom::Start(self.page_offset(page_id)))?;
-        self.file.read_exact(&mut buffer)?;
-        Page::from_bytes(&buffer)
-    }
-
-    // Helper method to write a page at correct offset
-    fn write_page(&mut self, page_id: PageId, page: &Page) -> Result<(), DatabaseError> {
-        let page_bytes = page.to_bytes()?;
-        self.file.seek(SeekFrom::Start(self.page_offset(page_id)))?;
-        self.file.write_all(&page_bytes)?;
-        self.file.flush()?;
-        Ok(())
-    }
-
     pub fn create_new<P: AsRef<Path>>(path: P) -> Result<DatabaseInfo, DatabaseError> {
         let path = path.as_ref();
         let mut file = OpenOptions::new()
@@ -82,17 +67,12 @@ impl StorageManager {
             .read(true)
             .truncate(true)
             .open(path)?;
-
-        // Write header first
         let header = BambangHeader::default();
-        file.write_all(&header.to_bytes())?;
-
-        // Then write the clean schema page
         let schema_page = Self::init_schema_page();
-        let page_bytes = schema_page.to_bytes()?;
+        let mut page_bytes = schema_page.to_bytes()?;
+        page_bytes[0..BAMBANG_HEADER_SIZE].copy_from_slice(&header.to_bytes());
         file.write_all(&page_bytes)?;
         file.flush()?;
-
         let file_size = file.metadata()?.len();
         Ok(DatabaseInfo {
             path: path.to_path_buf(),
@@ -105,29 +85,21 @@ impl StorageManager {
     pub fn open_existing<P: AsRef<Path>>(path: P) -> Result<DatabaseInfo, DatabaseError> {
         let path = path.as_ref();
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-
-        // Read header separately
         let mut header_buffer = vec![0u8; BAMBANG_HEADER_SIZE];
-        file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut header_buffer)?;
         let header = BambangHeader::from_bytes(&header_buffer)?;
-
         if header.file_format_write_version > 2 || header.file_format_read_version > 2 {
             return Err(DatabaseError::UnsupportedFileFormat {
                 version: header.file_format_write_version,
             });
         }
-
         let file_size = file.metadata()?.len();
-        let data_size = file_size - BAMBANG_HEADER_SIZE as u64;
-        let page_count = data_size / PAGE_SIZE as u64;
-
+        let page_count = file_size / PAGE_SIZE as u64;
         if page_count != header.database_size_pages.into() {
             return Err(DatabaseError::CorruptedDatabase {
                 reason: "File size doesn't match header".to_string(),
             });
         }
-
         Ok(DatabaseInfo {
             path: path.to_path_buf(),
             header,
@@ -137,9 +109,10 @@ impl StorageManager {
     }
 
     fn load_table_roots(&mut self) -> Result<(), DatabaseError> {
-        // Now we can cleanly read page 1 without header interference
-        let schema_page = self.read_page(1)?;
-
+        let mut buffer = vec![0u8; PAGE_SIZE];
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.read_exact(&mut buffer)?;
+        let schema_page = Page::from_bytes(&buffer)?;
         for i in 0..schema_page.slot_directory.slots.len() {
             if let Some(cell_data) = schema_page.get_cell(i) {
                 let row = Row::from_bytes(cell_data)?;
@@ -165,13 +138,12 @@ impl StorageManager {
             Value::Integer(new_root_page_id as i64),
             Value::Text(sql.to_string()),
         ]);
-
         let schema_file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.db_info.path)?;
         let mut schema_btree = BPlusTree::new(schema_file, 1)?;
-        if let Some(new_root) = schema_btree.insert(schema_row, Some(BAMBANG_HEADER_SIZE as u64))? {
+        if let Some(new_root) = schema_btree.insert(schema_row)? {
             self.table_roots
                 .insert("sqlite_schema".to_string(), new_root);
         }
@@ -186,13 +158,12 @@ impl StorageManager {
                 name: table_name.to_string(),
             }
         })?;
-
         let table_file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.db_info.path)?;
         let mut table_btree = BPlusTree::new(table_file, root_page_id)?;
-        if let Some(new_root) = table_btree.insert(row, Some(BAMBANG_HEADER_SIZE as u64))? {
+        if let Some(new_root) = table_btree.insert(row)? {
             self.update_table_root(table_name, new_root)?;
         }
         Ok(())
@@ -215,10 +186,10 @@ impl StorageManager {
     fn allocate_new_page(&mut self, page_type: PageType) -> Result<PageId, DatabaseError> {
         let new_page_id = self.db_info.page_count + 1;
         let new_page = Page::new(new_page_id, page_type);
-
-        // Write to correct offset (after header + existing pages)
-        self.write_page(new_page_id, &new_page)?;
-
+        let page_bytes = new_page.to_bytes()?;
+        self.file.seek(SeekFrom::End(0))?;
+        self.file.write_all(&page_bytes)?;
+        self.file.flush()?;
         self.db_info.page_count = new_page_id;
         self.db_info.file_size += PAGE_SIZE as u64;
         Ok(new_page_id)

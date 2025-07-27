@@ -158,6 +158,7 @@ pub struct PageStats {
  * │  [...cell N...] [...cell 2...] [...cell 1...] [...cell 0...]    │
  * └─────────────────────────────────────────────────────────────────┘
  */
+#[derive(Debug, Clone)]
 pub struct Page {
     pub page_id: PageId,
     pub page_type: PageType,
@@ -230,7 +231,11 @@ impl Page {
         }
 
         // Parse slot directory from remaining bytes
-        let slots = Self::read_slot_directory(&header_bytes[PAGE_HEADER_SIZE..expected_size], cell_count, page_id)?;
+        let slots = Self::read_slot_directory(
+            &header_bytes[PAGE_HEADER_SIZE..expected_size],
+            cell_count,
+            page_id,
+        )?;
 
         Ok(Page {
             page_id,
@@ -336,7 +341,7 @@ impl Page {
     }
 
     pub fn needs_overflow(&self, data_size: usize) -> bool {
-        data_size > (PAGE_SIZE / 4)
+        data_size >= (PAGE_SIZE / 2)
     }
 
     pub fn create_overflow_pointer(
@@ -437,7 +442,16 @@ impl Page {
     }
 
     pub fn can_fit(&self, data_size: usize) -> bool {
-        self.available_space() >= data_size + SLOT_DIRECTORY_ENTRY_SIZE
+        // What will the total space usage be after this insertion?
+        let new_slot_count = self.slot_directory.slots.len() + 1;
+        let new_slot_directory_size = new_slot_count * SLOT_DIRECTORY_ENTRY_SIZE;
+        let new_used_data_space = (PAGE_SIZE as u16 - self.free_space_offset) as usize + data_size;
+        let total_used_after_insert =
+            PAGE_HEADER_SIZE + new_slot_directory_size + new_used_data_space;
+
+        let fits = total_used_after_insert <= PAGE_SIZE;
+
+        fits
     }
 
     pub fn insert_cell(
@@ -484,8 +498,8 @@ impl Page {
     /// This marks the slot as deleted but doesn't immediately reclaim space
     pub fn delete_cell(&mut self, slot_index: usize) -> Result<(), DatabaseError> {
         if self.is_metadata_only() {
-            return Err(DatabaseError::SerializationError { 
-                details: "Deletion requires full page".to_string() 
+            return Err(DatabaseError::SerializationError {
+                details: "Deletion requires full page".to_string(),
             });
         }
 
@@ -509,15 +523,16 @@ impl Page {
         self.slot_directory.slots[slot_index].length = 0;
         self.slot_directory.slots[slot_index].offset = 0;
         self.slot_directory.slots[slot_index].row_id = None;
-        
+
         // FIX: Clean up overflow information
         if self.slot_directory.slots[slot_index].is_overflow {
             if let Some(overflow_ptr) = &self.slot_directory.slots[slot_index].overflow_pointer {
                 // Remove from overflow_pages list
-                self.overflow_pages.retain(|&page_id| page_id != overflow_ptr.page_id);
+                self.overflow_pages
+                    .retain(|&page_id| page_id != overflow_ptr.page_id);
             }
         }
-        
+
         self.slot_directory.slots[slot_index].is_overflow = false;
         self.slot_directory.slots[slot_index].overflow_pointer = None;
 
@@ -539,8 +554,8 @@ impl Page {
         row_id: Option<RowId>,
     ) -> Result<(), DatabaseError> {
         if self.is_metadata_only() {
-            return Err(DatabaseError::SerializationError { 
-                details: "Update requires full page".to_string() 
+            return Err(DatabaseError::SerializationError {
+                details: "Update requires full page".to_string(),
             });
         }
 
@@ -656,14 +671,14 @@ impl Page {
     /// This moves all active cells to the end of the page, removing gaps
     pub fn compact(&mut self) -> Result<(), DatabaseError> {
         if self.is_metadata_only() {
-            return Err(DatabaseError::SerializationError { 
-                details: "Compaction requires full page".to_string() 
+            return Err(DatabaseError::SerializationError {
+                details: "Compaction requires full page".to_string(),
             });
         }
 
         let Some(ref mut page_data) = self.data else {
-            return Err(DatabaseError::SerializationError { 
-                details: "Compaction requires full page".to_string() 
+            return Err(DatabaseError::SerializationError {
+                details: "Compaction requires full page".to_string(),
             });
         };
 
@@ -1015,8 +1030,8 @@ impl Page {
     /// Serialize the page to bytes (only works in full data mode)
     pub fn to_bytes(&self) -> Result<Vec<u8>, DatabaseError> {
         if self.is_metadata_only() {
-            return Err(DatabaseError::SerializationError { 
-                details: "Serialization requires full page".to_string() 
+            return Err(DatabaseError::SerializationError {
+                details: "Serialization requires full page".to_string(),
             });
         }
 
@@ -1040,7 +1055,8 @@ impl Page {
             let data_start = self.free_space_offset as usize;
             if data_start < PAGE_SIZE && data_start < data.len() {
                 let copy_len = std::cmp::min(PAGE_SIZE - data_start, data.len() - data_start);
-                buffer[data_start..data_start + copy_len].copy_from_slice(&data[data_start..data_start + copy_len]);
+                buffer[data_start..data_start + copy_len]
+                    .copy_from_slice(&data[data_start..data_start + copy_len]);
             }
         }
 

@@ -352,7 +352,7 @@ fn test_overflow_functionality() {
     let mut page = Page::new(1, PageType::LeafTable);
     let large_data = create_test_data(PAGE_SIZE / 2); // Definitely needs overflow
 
-    assert!(page.needs_overflow(large_data.len()));
+    assert_eq!(page.needs_overflow(large_data.len()), true);
 
     // This should fail without overflow page
     assert!(matches!(

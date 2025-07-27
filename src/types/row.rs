@@ -1,9 +1,8 @@
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{RowId, error::DatabaseError, value::Value};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     pub row_id: Option<RowId>,
     pub values: Vec<Value>,
@@ -42,21 +41,14 @@ impl Row {
         let mut size = 1; // has_row_id flag
 
         if self.row_id.is_some() {
-            size += 8; // row_id
+            size += 8; // row_id (8 bytes for u64/i64)
         }
 
-        size += 4; // value_count
+        size += 4; // value_count (4 bytes for u32)
 
+        // Use Value's serialized_size method
         for value in &self.values {
-            size += match value {
-                Value::Null => 1,
-                Value::Integer(_) => 9,                   // 1 type + 8 data
-                Value::Real(_) => 9,                      // 1 type + 8 data
-                Value::Text(s) => 5 + s.as_bytes().len(), // 1 type + 4 length + data
-                Value::Blob(b) => 5 + b.len(),            // 1 type + 4 length + data
-                Value::Boolean(_) => 2,                   // 1 type + 1 data
-                Value::Timestamp(_) => 9,                 // 1 type + 8 data
-            };
+            size += value.serialized_size();
         }
 
         size
@@ -79,47 +71,13 @@ impl Row {
         // Value count
         buffer.extend_from_slice(&(self.values.len() as u32).to_le_bytes());
 
-        // Values
+        // Values - use Value's to_bytes method
         for value in &self.values {
-            self.serialize_value_compact(value, &mut buffer);
+            let value_bytes = value.to_bytes();
+            buffer.extend_from_slice(&value_bytes);
         }
 
         buffer
-    }
-
-    fn serialize_value_compact(&self, value: &Value, buffer: &mut Vec<u8>) {
-        match value {
-            Value::Null => {
-                buffer.push(0); // Type discriminant
-            }
-            Value::Integer(i) => {
-                buffer.push(1);
-                buffer.extend_from_slice(&i.to_le_bytes());
-            }
-            Value::Real(f) => {
-                buffer.push(2);
-                buffer.extend_from_slice(&f.to_le_bytes());
-            }
-            Value::Text(s) => {
-                buffer.push(3);
-                let bytes = s.as_bytes();
-                buffer.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                buffer.extend_from_slice(bytes);
-            }
-            Value::Blob(b) => {
-                buffer.push(4);
-                buffer.extend_from_slice(&(b.len() as u32).to_le_bytes());
-                buffer.extend_from_slice(b);
-            }
-            Value::Boolean(b) => {
-                buffer.push(5);
-                buffer.push(if *b { 1 } else { 0 });
-            }
-            Value::Timestamp(t) => {
-                buffer.push(6);
-                buffer.extend_from_slice(&t.to_le_bytes());
-            }
-        }
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DatabaseError> {
@@ -170,10 +128,10 @@ impl Row {
         ]) as usize;
         cursor += 4;
 
-        // Parse values
+        // Parse values using Value's from_bytes method
         let mut values = Vec::with_capacity(value_count);
         for _ in 0..value_count {
-            let (value, consumed) = Row::deserialize_value_compact(&bytes[cursor..])?;
+            let (value, consumed) = Self::deserialize_value(&bytes[cursor..])?;
             values.push(value);
             cursor += consumed;
         }
@@ -181,7 +139,8 @@ impl Row {
         Ok(Row { row_id, values })
     }
 
-    fn deserialize_value_compact(bytes: &[u8]) -> Result<(Value, usize), DatabaseError> {
+    /// Helper function to deserialize a value and return the number of bytes consumed
+    fn deserialize_value(bytes: &[u8]) -> Result<(Value, usize), DatabaseError> {
         if bytes.is_empty() {
             return Err(DatabaseError::SerializationError {
                 details: "Empty value bytes".to_string(),
@@ -189,128 +148,63 @@ impl Row {
         }
 
         let type_discriminant = bytes[0];
-        let mut cursor = 1;
-
-        match type_discriminant {
-            0 => Ok((Value::Null, 1)),
-            1 => {
-                if cursor + 8 > bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete integer".to_string(),
-                    });
-                }
-                let value = i64::from_le_bytes([
-                    bytes[cursor],
-                    bytes[cursor + 1],
-                    bytes[cursor + 2],
-                    bytes[cursor + 3],
-                    bytes[cursor + 4],
-                    bytes[cursor + 5],
-                    bytes[cursor + 6],
-                    bytes[cursor + 7],
-                ]);
-                Ok((Value::Integer(value), 9))
-            }
-            2 => {
-                if cursor + 8 > bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete real".to_string(),
-                    });
-                }
-                let value = f64::from_le_bytes([
-                    bytes[cursor],
-                    bytes[cursor + 1],
-                    bytes[cursor + 2],
-                    bytes[cursor + 3],
-                    bytes[cursor + 4],
-                    bytes[cursor + 5],
-                    bytes[cursor + 6],
-                    bytes[cursor + 7],
-                ]);
-                Ok((Value::Real(value), 9))
-            }
+        
+        // Calculate expected size based on type discriminant
+        let expected_size = match type_discriminant {
+            0 => 1, // Null
+            1 => 1 + 8, // Integer
+            2 => 1 + 8, // Real
             3 => {
-                if cursor + 4 > bytes.len() {
+                // Text - need to read length first
+                if bytes.len() < 5 {
                     return Err(DatabaseError::SerializationError {
                         details: "Incomplete text length".to_string(),
                     });
                 }
                 let length = u32::from_le_bytes([
-                    bytes[cursor],
-                    bytes[cursor + 1],
-                    bytes[cursor + 2],
-                    bytes[cursor + 3],
+                    bytes[1],
+                    bytes[2],
+                    bytes[3],
+                    bytes[4],
                 ]) as usize;
-                cursor += 4;
-
-                if cursor + length > bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete text data".to_string(),
-                    });
-                }
-
-                let text =
-                    String::from_utf8(bytes[cursor..cursor + length].to_vec()).map_err(|_| {
-                        DatabaseError::SerializationError {
-                            details: "Invalid UTF-8 in text".to_string(),
-                        }
-                    })?;
-
-                Ok((Value::Text(text), 5 + length))
+                1 + 4 + length
             }
             4 => {
-                if cursor + 4 > bytes.len() {
+                // Blob - need to read length first
+                if bytes.len() < 5 {
                     return Err(DatabaseError::SerializationError {
                         details: "Incomplete blob length".to_string(),
                     });
                 }
                 let length = u32::from_le_bytes([
-                    bytes[cursor],
-                    bytes[cursor + 1],
-                    bytes[cursor + 2],
-                    bytes[cursor + 3],
+                    bytes[1],
+                    bytes[2],
+                    bytes[3],
+                    bytes[4],
                 ]) as usize;
-                cursor += 4;
+                1 + 4 + length
+            }
+            5 => 1 + 1, // Boolean
+            6 => 1 + 8, // Timestamp
+            _ => {
+                return Err(DatabaseError::SerializationError {
+                    details: format!("Unknown type discriminant: {}", type_discriminant),
+                });
+            }
+        };
 
-                if cursor + length > bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete blob data".to_string(),
-                    });
-                }
-
-                let blob = bytes[cursor..cursor + length].to_vec();
-                Ok((Value::Blob(blob), 5 + length))
-            }
-            5 => {
-                if cursor >= bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete boolean".to_string(),
-                    });
-                }
-                let value = bytes[cursor] != 0;
-                Ok((Value::Boolean(value), 2))
-            }
-            6 => {
-                if cursor + 8 > bytes.len() {
-                    return Err(DatabaseError::SerializationError {
-                        details: "Incomplete timestamp".to_string(),
-                    });
-                }
-                let value = i64::from_le_bytes([
-                    bytes[cursor],
-                    bytes[cursor + 1],
-                    bytes[cursor + 2],
-                    bytes[cursor + 3],
-                    bytes[cursor + 4],
-                    bytes[cursor + 5],
-                    bytes[cursor + 6],
-                    bytes[cursor + 7],
-                ]);
-                Ok((Value::Timestamp(value), 9))
-            }
-            _ => Err(DatabaseError::SerializationError {
-                details: format!("Unknown type discriminant: {}", type_discriminant),
-            }),
+        // Ensure we have enough bytes
+        if bytes.len() < expected_size {
+            return Err(DatabaseError::SerializationError {
+                details: format!("Insufficient bytes for value type {}: expected {}, got {}", 
+                    type_discriminant, expected_size, bytes.len()),
+            });
         }
+
+        // Extract the exact bytes for this value and deserialize
+        let value_bytes = &bytes[0..expected_size];
+        let value = Value::from_bytes(value_bytes)?;
+        
+        Ok((value, expected_size))
     }
 }

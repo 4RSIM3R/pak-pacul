@@ -1,3 +1,4 @@
+pub mod entry;
 pub mod error;
 pub mod page;
 pub mod row;
