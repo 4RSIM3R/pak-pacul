@@ -8,12 +8,23 @@ use std::{
 use crate::{
     executor::{
         insert::{Inserter, TableInserter},
+        predicate::Predicate,
         scan::Scanner,
         sequential_scan::SequentialScanner
     },
-    storage::{bplus_tree::BPlusTree, header::BambangHeader, BAMBANG_HEADER_SIZE},
+    storage::{
+        bplus_tree::BPlusTree,
+        header::BambangHeader,
+        schema::{SchemaManager, TableSchema, ColumnSchema},
+        BAMBANG_HEADER_SIZE
+    },
     types::{
-        error::DatabaseError, page::{Page, PageType}, row::Row, value::Value, PageId, PAGE_SIZE
+        error::DatabaseError,
+        page::{Page, PageType},
+        row::Row,
+        value::{Value, DataType},
+        PageId,
+        PAGE_SIZE
     },
 };
 
@@ -24,10 +35,12 @@ pub struct DatabaseInfo {
     pub file_size: u64,
 }
 
+
 pub struct StorageManager {
     pub db_info: DatabaseInfo,
     pub file: File,
     pub table_roots: HashMap<String, PageId>,
+    pub schema_manager: SchemaManager,
 }
 
 impl StorageManager {
@@ -48,8 +61,9 @@ impl StorageManager {
             db_info,
             file,
             table_roots: HashMap::new(),
+            schema_manager: SchemaManager::new(),
         };
-        storage_manager.load_table_roots()?;
+        storage_manager.load_table_roots_and_schemas()?;
         Ok(storage_manager)
     }
 
@@ -123,21 +137,52 @@ impl StorageManager {
         })
     }
 
-    fn load_table_roots(&mut self) -> Result<(), DatabaseError> {
+    fn load_table_roots_and_schemas(&mut self) -> Result<(), DatabaseError> {
         let schema_page = self.read_page(1)?;
+        let mut table_schemas: HashMap<String, (PageId, String, Vec<ColumnSchema>)> = HashMap::new();
+        
         for i in 0..schema_page.slot_directory.slots.len() {
             if let Some(cell_data) = schema_page.get_cell(i) {
                 let row = Row::from_bytes(cell_data)?;
-                if row.values.len() >= 4 {
-                    if let (Value::Text(table_name), Value::Integer(root_page)) =
-                        (&row.values[1], &row.values[3])
-                    {
-                        self.table_roots
-                            .insert(table_name.clone(), *root_page as PageId);
+                if row.values.len() >= 5 {
+                    match &row.values[0] {
+                        Value::Text(entry_type) if entry_type == "table" => {
+                            // Table entry: type, name, tbl_name, rootpage, sql
+                            if let (Value::Text(table_name), Value::Integer(root_page), Value::Text(sql)) =
+                                (&row.values[1], &row.values[3], &row.values[4])
+                            {
+                                self.table_roots.insert(table_name.clone(), *root_page as PageId);
+                                table_schemas.insert(
+                                    table_name.clone(),
+                                    (*root_page as PageId, sql.clone(), Vec::new())
+                                );
+                            }
+                        }
+                        Value::Text(entry_type) if entry_type == "column" => {
+                            // Column entry: type, name, tbl_name, position, data_type, nullable, default, primary_key, unique
+                            if row.values.len() >= 9 {
+                                if let Value::Text(table_name) = &row.values[2] {
+                                    let column_schema = ColumnSchema::from_schema_row(&row)?;
+                                    if let Some((_, _, columns)) = table_schemas.get_mut(table_name) {
+                                        columns.push(column_schema);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {} // Ignore other entry types
                     }
                 }
             }
         }
+        
+        // Create TableSchema objects and add them to schema manager
+        for (table_name, (root_page_id, sql, mut columns)) in table_schemas {
+            // Sort columns by position
+            columns.sort_by_key(|col| col.position);
+            let table_schema = TableSchema::new(table_name.clone(), columns, root_page_id, sql);
+            self.schema_manager.add_table_schema(table_schema);
+        }
+        
         Ok(())
     }
 
@@ -195,7 +240,7 @@ impl StorageManager {
         Ok(())
     }
 
-    fn allocate_new_page(&mut self, page_type: PageType) -> Result<PageId, DatabaseError> {
+    pub fn allocate_new_page(&mut self, page_type: PageType) -> Result<PageId, DatabaseError> {
         let new_page_id = self.db_info.page_count + 1;
         let new_page = Page::new(new_page_id, page_type);
         self.write_page(new_page_id, &new_page)?;
@@ -237,13 +282,37 @@ impl StorageManager {
         SequentialScanner::new(self, table_name.to_string(), batch_size)
     }
 
-    /// Scan all rows from a table using the scanner
-    pub fn scan_table(&self, table_name: &str) -> Result<Vec<Row>, DatabaseError> {
+    /// Scan all rows from a table using the scanner, optionally with predicate filtering
+    pub fn scan_table(&self, table_name: &str, predicate: Option<Predicate>) -> Result<Vec<Row>, DatabaseError> {
         let mut scanner = self.create_scanner(table_name, None)?;
         let mut rows = Vec::new();
 
+        // Get table schema for predicate validation and evaluation if predicate is provided
+        let table_schema = if predicate.is_some() {
+            Some(self.get_table_schema(table_name)
+                .ok_or_else(|| DatabaseError::TableNotFound {
+                    name: table_name.to_string(),
+                })?)
+        } else {
+            None
+        };
+
+        // Validate predicate against schema if provided
+        if let (Some(pred), Some(schema)) = (&predicate, &table_schema) {
+            pred.validate_against_schema(schema)?;
+        }
+
         while let Some(row) = scanner.scan()? {
-            rows.push(row);
+            // Apply predicate filtering if provided
+            let matches = if let (Some(pred), Some(schema)) = (&predicate, &table_schema) {
+                pred.evaluate(&row, schema)?
+            } else {
+                true // No predicate means all rows match
+            };
+
+            if matches {
+                rows.push(row);
+            }
         }
 
         Ok(rows)
@@ -273,5 +342,87 @@ impl StorageManager {
         }
         
         Ok(())
+    }
+
+    /// Get table schema by name
+    pub fn get_table_schema(&self, table_name: &str) -> Option<&TableSchema> {
+        self.schema_manager.get_table_schema(table_name)
+    }
+
+    /// Add a new table schema and persist it
+    pub fn add_table_schema(&mut self, schema: TableSchema) -> Result<(), DatabaseError> {
+        // Store table entry in sqlite_schema
+        let table_row = Row::new(vec![
+            Value::Text("table".to_string()),
+            Value::Text(schema.table_name.clone()),
+            Value::Text(schema.table_name.clone()),
+            Value::Integer(schema.root_page_id as i64),
+            Value::Text(schema.sql.clone()),
+        ]);
+
+        let schema_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.db_info.path)?;
+        let mut schema_btree =
+            BPlusTree::new_with_extras(schema_file, 1, Some(BAMBANG_HEADER_SIZE as u64))?;
+        
+        // Insert table entry
+        if let Some(new_root) = schema_btree.insert(table_row, Some(BAMBANG_HEADER_SIZE as u64))? {
+            self.table_roots.insert("sqlite_schema".to_string(), new_root);
+        }
+
+        // Store column entries
+        for column in &schema.columns {
+            let column_row = column.to_schema_row(&schema.table_name);
+            let schema_file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.db_info.path)?;
+            let mut schema_btree =
+                BPlusTree::new_with_extras(schema_file, 1, Some(BAMBANG_HEADER_SIZE as u64))?;
+            
+            if let Some(new_root) = schema_btree.insert(column_row, Some(BAMBANG_HEADER_SIZE as u64))? {
+                self.table_roots.insert("sqlite_schema".to_string(), new_root);
+            }
+        }
+
+        // Add to in-memory schema manager
+        self.table_roots.insert(schema.table_name.clone(), schema.root_page_id);
+        self.schema_manager.add_table_schema(schema);
+        
+        Ok(())
+    }
+
+    /// Validate a row against table schema
+    pub fn validate_row(&self, table_name: &str, row: &Row) -> Result<(), DatabaseError> {
+        if let Some(schema) = self.get_table_schema(table_name) {
+            schema.validate_row(row)
+        } else {
+            Err(DatabaseError::TableNotFound {
+                name: table_name.to_string(),
+            })
+        }
+    }
+
+    /// Apply default values to a row based on table schema
+    pub fn apply_defaults(&self, table_name: &str, row: &mut Row) -> Result<(), DatabaseError> {
+        if let Some(schema) = self.get_table_schema(table_name) {
+            schema.apply_defaults(row)
+        } else {
+            Err(DatabaseError::TableNotFound {
+                name: table_name.to_string(),
+            })
+        }
+    }
+
+    /// Check if a table exists
+    pub fn table_exists(&self, table_name: &str) -> bool {
+        self.schema_manager.table_exists(table_name)
+    }
+
+    /// Get all table names
+    pub fn get_table_names(&self) -> Vec<String> {
+        self.schema_manager.table_names().iter().map(|s| s.to_string()).collect()
     }
 }

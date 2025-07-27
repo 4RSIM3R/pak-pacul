@@ -48,6 +48,8 @@ pub enum DatabaseError {
     UnsupportedFileFormat { version: u8 },
     #[error("Corrupted database: {reason}")]
     CorruptedDatabase { reason: String },
+    #[error("Invalid data: {details}")]
+    InvalidData { details: String },
 }
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;

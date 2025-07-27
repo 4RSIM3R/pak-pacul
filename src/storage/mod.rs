@@ -1,5 +1,6 @@
 pub mod bplus_tree;
 pub mod header;
+pub mod schema;
 pub mod storage_manager;
 
 pub const BAMBANG_HEADER_SIZE: usize = 100;

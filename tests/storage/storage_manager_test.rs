@@ -1,8 +1,9 @@
 use std::fs;
 
 use bambang::{
-    storage::storage_manager::StorageManager,
-    types::{row::Row, value::Value},
+    executor::predicate::Predicate,
+    storage::{schema::ColumnSchema, storage_manager::StorageManager},
+    types::{row::Row, value::{DataType, Value}},
     utils::mock::{TempDatabase, create_temp_db_path_with_prefix},
 };
 
@@ -107,6 +108,82 @@ fn test_error_handling_nonexistent_table() {
     let test_row = create_user_row(1, "Test", "test@example.com");
     let result = storage_manager.insert_into_table("nonexistent_table", test_row);
     assert!(result.is_err());
+}
+
+fn setup_test_table_with_schema(temp_db: &mut TempDatabase) -> &StorageManager {
+    let storage_manager = temp_db.create_storage_manager().unwrap();
+    
+    let sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER, active BOOLEAN)";
+    storage_manager.create_table("users", sql).unwrap();
+
+    let test_rows = vec![
+        Row::new(vec![
+            Value::Integer(1),
+            Value::Text("Alice".to_string()),
+            Value::Integer(25),
+            Value::Boolean(true),
+        ]),
+        Row::new(vec![
+            Value::Integer(2),
+            Value::Text("Bob".to_string()),
+            Value::Integer(30),
+            Value::Boolean(false),
+        ]),
+        Row::new(vec![
+            Value::Integer(3),
+            Value::Text("Charlie".to_string()),
+            Value::Integer(35),
+            Value::Boolean(true),
+        ]),
+        Row::new(vec![
+            Value::Integer(4),
+            Value::Text("Diana".to_string()),
+            Value::Integer(28),
+            Value::Boolean(true),
+        ]),
+    ];
+
+    for row in test_rows {
+        storage_manager.insert_into_table("users", row).unwrap();
+    }
+
+    storage_manager
+}
+
+#[test]
+fn test_scan_table_without_predicate() {
+    let mut temp_db = TempDatabase::with_prefix("scan_no_predicate_test");
+    let storage_manager = setup_test_table_with_schema(&mut temp_db);
+    
+    let all_rows = storage_manager.scan_table("users", None).unwrap();
+    assert_eq!(all_rows.len(), 4);
+}
+
+#[test]
+fn test_scan_table_with_predicate_functionality() {
+    let mut temp_db = TempDatabase::with_prefix("scan_predicate_test");
+    let storage_manager = temp_db.create_storage_manager().unwrap();
+    
+    storage_manager.create_table("test_table", "CREATE TABLE test_table(id INTEGER, name TEXT, value INTEGER)").unwrap();
+    
+    let test_rows = vec![
+        Row::new(vec![Value::Integer(1), Value::Text("Alice".to_string()), Value::Integer(100)]),
+        Row::new(vec![Value::Integer(2), Value::Text("Bob".to_string()), Value::Integer(200)]),
+        Row::new(vec![Value::Integer(3), Value::Text("Charlie".to_string()), Value::Integer(300)]),
+    ];
+    
+    for row in test_rows {
+        storage_manager.insert_into_table("test_table", row).unwrap();
+    }
+    
+    let all_rows = storage_manager.scan_table("test_table", None).unwrap();
+    assert_eq!(all_rows.len(), 3);
+    
+    let predicate = Predicate::eq("name".to_string(), Value::Text("Alice".to_string()));
+    let result = storage_manager.scan_table("test_table", Some(predicate));
+    
+    assert!(result.is_ok());
+ 
 }
 
 #[test]

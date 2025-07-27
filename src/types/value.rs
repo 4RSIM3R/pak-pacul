@@ -16,6 +16,38 @@ pub enum DataType {
     Timestamp,
 }
 
+impl std::fmt::Display for DataType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataType::Null => write!(f, "NULL"),
+            DataType::Integer => write!(f, "INTEGER"),
+            DataType::Real => write!(f, "REAL"),
+            DataType::Text => write!(f, "TEXT"),
+            DataType::Blob => write!(f, "BLOB"),
+            DataType::Boolean => write!(f, "BOOLEAN"),
+            DataType::Timestamp => write!(f, "TIMESTAMP"),
+        }
+    }
+}
+
+impl DataType {
+    /// Create DataType from string representation
+    pub fn from_string(s: &str) -> Result<Self, DatabaseError> {
+        match s.to_uppercase().as_str() {
+            "NULL" => Ok(DataType::Null),
+            "INTEGER" | "INT" => Ok(DataType::Integer),
+            "REAL" | "FLOAT" | "DOUBLE" => Ok(DataType::Real),
+            "TEXT" | "STRING" | "VARCHAR" => Ok(DataType::Text),
+            "BLOB" | "BINARY" => Ok(DataType::Blob),
+            "BOOLEAN" | "BOOL" => Ok(DataType::Boolean),
+            "TIMESTAMP" | "DATETIME" => Ok(DataType::Timestamp),
+            _ => Err(DatabaseError::SerializationError {
+                details: format!("Unknown data type: {}", s),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
@@ -294,6 +326,85 @@ impl Value {
             Value::Blob(b) => 1 + 4 + b.len(), // Type + length (4 bytes) + blob bytes
             Value::Boolean(_) => 1 + 1,        // Type + 1 byte for boolean
             Value::Timestamp(_) => 1 + 8,      // Type + 8 bytes for i64
+        }
+    }
+
+    /// Create Value from string representation with specified data type
+    pub fn from_string(s: &str, data_type: &DataType) -> Result<Self, DatabaseError> {
+        if s == "NULL" {
+            return Ok(Value::Null);
+        }
+
+        match data_type {
+            DataType::Null => Ok(Value::Null),
+            DataType::Integer => {
+                s.parse::<i64>()
+                    .map(Value::Integer)
+                    .map_err(|_| DatabaseError::SerializationError {
+                        details: format!("Cannot parse '{}' as integer", s),
+                    })
+            }
+            DataType::Real => {
+                s.parse::<f64>()
+                    .map(Value::Real)
+                    .map_err(|_| DatabaseError::SerializationError {
+                        details: format!("Cannot parse '{}' as real", s),
+                    })
+            }
+            DataType::Text => Ok(Value::Text(s.to_string())),
+            DataType::Blob => {
+                // For simplicity, treat as hex string or convert string to bytes
+                if s.starts_with("0x") || s.starts_with("0X") {
+                    let hex_str = &s[2..];
+                    // Simple hex decode without external dependency
+                    let mut bytes = Vec::new();
+                    let chars: Vec<char> = hex_str.chars().collect();
+                    if chars.len() % 2 != 0 {
+                        return Err(DatabaseError::SerializationError {
+                            details: format!("Invalid hex string length: {}", s),
+                        });
+                    }
+                    for chunk in chars.chunks(2) {
+                        let hex_byte = format!("{}{}", chunk[0], chunk[1]);
+                        match u8::from_str_radix(&hex_byte, 16) {
+                            Ok(byte) => bytes.push(byte),
+                            Err(_) => return Err(DatabaseError::SerializationError {
+                                details: format!("Cannot parse '{}' as hex blob", s),
+                            }),
+                        }
+                    }
+                    Ok(Value::Blob(bytes))
+                } else {
+                    Ok(Value::Blob(s.as_bytes().to_vec()))
+                }
+            }
+            DataType::Boolean => {
+                match s.to_lowercase().as_str() {
+                    "true" | "t" | "yes" | "y" | "1" => Ok(Value::Boolean(true)),
+                    "false" | "f" | "no" | "n" | "0" => Ok(Value::Boolean(false)),
+                    _ => Err(DatabaseError::SerializationError {
+                        details: format!("Cannot parse '{}' as boolean", s),
+                    }),
+                }
+            }
+            DataType::Timestamp => Value::timestamp_from_str(s),
+        }
+    }
+
+    /// Check if this value is compatible with the specified data type
+    pub fn is_compatible_with_type(&self, data_type: &DataType) -> bool {
+        match (self, data_type) {
+            (Value::Null, _) => true, // NULL is compatible with any type
+            (Value::Integer(_), DataType::Integer) => true,
+            (Value::Real(_), DataType::Real) => true,
+            (Value::Text(_), DataType::Text) => true,
+            (Value::Blob(_), DataType::Blob) => true,
+            (Value::Boolean(_), DataType::Boolean) => true,
+            (Value::Timestamp(_), DataType::Timestamp) => true,
+            // Allow some cross-type compatibility
+            (Value::Integer(_), DataType::Real) => true, // Integer can be promoted to Real
+            (Value::Boolean(_), DataType::Integer) => true, // Boolean can be converted to Integer
+            _ => false,
         }
     }
 }

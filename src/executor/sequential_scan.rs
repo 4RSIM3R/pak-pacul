@@ -56,12 +56,14 @@ impl SequentialScanner {
             is_exhausted: false,
         })
     }
+
     fn page_offset(&self, page_id: PageId) -> u64 {
         let header_offset = self
             .extras
             .unwrap_or(crate::storage::BAMBANG_HEADER_SIZE as u64);
         header_offset + (page_id - 1) * PAGE_SIZE as u64
     }
+
     fn find_first_leaf(&mut self) -> Result<PageId, DatabaseError> {
         let mut current_page_id = self.root_page_id;
         loop {
@@ -91,6 +93,7 @@ impl SequentialScanner {
             }
         }
     }
+
     fn load_page_metadata(&mut self, page_id: PageId) -> Result<Page, DatabaseError> {
         let offset = self.page_offset(page_id);
         let mut header_buffer = vec![0u8; crate::types::PAGE_HEADER_SIZE];
@@ -102,6 +105,7 @@ impl SequentialScanner {
         self.file.read_exact(&mut metadata_buffer)?;
         Page::from_header_bytes(&metadata_buffer)
     }
+
     fn read_child_page_id_from_slot(
         &mut self,
         page_id: PageId,
@@ -114,6 +118,7 @@ impl SequentialScanner {
         self.file.read_exact(&mut page_id_buffer)?;
         Ok(u64::from_le_bytes(page_id_buffer))
     }
+
     fn read_row_from_slot(
         &mut self,
         page_id: PageId,
@@ -133,6 +138,7 @@ impl SequentialScanner {
         self.file.read_exact(&mut row_buffer)?;
         Row::from_bytes(&row_buffer)
     }
+
     fn prefetch_next_page(&mut self, current_page: &Page) -> Result<(), DatabaseError> {
         if let Some(next_page_id) = current_page.next_leaf_page_id {
             if self.read_ahead_pages.len() < 2 {
@@ -142,6 +148,7 @@ impl SequentialScanner {
         }
         Ok(())
     }
+
     fn get_next_page(&mut self) -> Result<Option<(PageId, Page)>, DatabaseError> {
         // First, try to use prefetched pages
         if let Some(page) = self.read_ahead_pages.pop_front() {
@@ -164,6 +171,7 @@ impl SequentialScanner {
 
         Ok(None)
     }
+    
 }
 
 impl Scanner for SequentialScanner {

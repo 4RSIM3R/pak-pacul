@@ -213,7 +213,7 @@ fn test_inserter_integration_with_scanner() -> Result<(), DatabaseError> {
     }
     
     // Verify data was inserted correctly by scanning
-    let scanned_rows = storage.scan_table("integration_test")?;
+    let scanned_rows = storage.scan_table("integration_test", None)?;
     assert_eq!(scanned_rows.len(), test_data.len());
     
     // Verify all IDs are present
